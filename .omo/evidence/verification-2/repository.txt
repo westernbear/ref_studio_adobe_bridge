@@ -1,0 +1,4 @@
+verified_commit=36c5bc5d7ce9e9aec6564b73e3b038a43705dde1
+branch=main
+remote=https://github.com/westernbear/ref_studio_adobe_bridge.git
+private=true

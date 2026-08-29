@@ -1,0 +1,5 @@
+$ bun build src/cli.ts --target=node --outdir=dist
+Bundled 244 modules in 36ms
+
+  cli.js  1.0 MB  (entry point)
+

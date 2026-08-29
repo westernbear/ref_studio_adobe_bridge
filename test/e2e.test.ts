@@ -3,7 +3,26 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  getDefaultEnvironment,
+  StdioClientTransport,
+} from "@modelcontextprotocol/sdk/client/stdio.js";
+
+const enabledEnvironment = {
+  ...getDefaultEnvironment(),
+  RVS_ADOBE_MCP: "true",
+};
+
+test("CLI refuses new commands while the Adobe feature flag is disabled", async () => {
+  const process = Bun.spawn(["bun", "run", "src/cli.ts", "stdio"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(await process.exited).not.toBe(0);
+  expect(await new Response(process.stderr).text()).toContain(
+    "ADOBE_MCP_DISABLED",
+  );
+});
 
 test("CLI queues and locally completes one MCP command without changing original AEP", async () => {
   // Given
@@ -25,7 +44,12 @@ test("CLI queues and locally completes one MCP command without changing original
   // When
   const enqueue = Bun.spawn(
     ["bun", "run", "src/cli.ts", "enqueue", "--spool", root],
-    { stdin: new Blob([command]), stdout: "pipe", stderr: "pipe" },
+    {
+      env: enabledEnvironment,
+      stdin: new Blob([command]),
+      stdout: "pipe",
+      stderr: "pipe",
+    },
   );
   expect(await enqueue.exited).toBe(0);
   const once = Bun.spawn(
@@ -39,7 +63,7 @@ test("CLI queues and locally completes one MCP command without changing original
       "--original-aep",
       original,
     ],
-    { stdout: "pipe", stderr: "pipe" },
+    { env: enabledEnvironment, stdout: "pipe", stderr: "pipe" },
   );
   expect(await once.exited).toBe(0);
 
@@ -60,6 +84,7 @@ test("MCP stdio lists tools and queues a bound command", async () => {
     command: "bun",
     args: ["run", "src/cli.ts", "stdio", "--spool", root],
     cwd: process.cwd(),
+    env: enabledEnvironment,
     stderr: "pipe",
   });
   await client.connect(transport);

@@ -16,6 +16,8 @@ const digestFile = async (path: string): Promise<string> =>
     .digest("hex");
 
 const main = async (): Promise<void> => {
+  if (process.env["RVS_ADOBE_MCP"] !== "true")
+    throw new Error("ADOBE_MCP_DISABLED");
   const mode = process.argv[2] ?? "stdio";
   const { RVS_ADOBE_SPOOL } = process.env;
   const spoolRoot = option("--spool") ?? RVS_ADOBE_SPOOL;

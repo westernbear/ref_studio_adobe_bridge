@@ -6,13 +6,16 @@ Private local connector for typed motion-scene operations against an After Effec
 
 ```sh
 bun install
-RVS_ADOBE_SPOOL="$HOME/Library/Application Support/RVSAdobeBridge/spool" bun run src/cli.ts stdio
+RVS_ADOBE_MCP=true RVS_ADOBE_SPOOL="$HOME/Library/Application Support/RVSAdobeBridge/spool" bun run src/cli.ts stdio
 ```
 
 The connector exposes the versioned `adobe.*_v1` MCP tools over stdio. A cloud gateway may call
 the same dispatcher only through the HMAC-authenticated relay seam. Cloud arguments cannot contain
 local paths, upload URLs, access tokens, tenant/user identifiers, arbitrary scripts, raw expressions,
 or preset paths.
+
+`RVS_ADOBE_MCP` only gates new command admission. Existing spool results and local artifacts remain
+readable when it is disabled.
 
 Commands move atomically through `commands/<id>.pending.json` and `.running.json`; terminal results
 land in `results/<id>.json`. The AE panel polls every 2 seconds and serially executes one mutation.

@@ -157,10 +157,8 @@ export class CommandSpool {
         const command = StoredCommandSchema.parse(
           parseJson(await readFile(path, "utf8")),
         );
-        await this.#writeAtomic(
-          path.replace(".running.json", ".pending.json"),
-          { ...command, status: "QUEUED" },
-        );
+        await this.#writeAtomic(path, { ...command, status: "QUEUED" });
+        await rename(path, path.replace(".running.json", ".pending.json"));
       }),
     );
     return running.length;

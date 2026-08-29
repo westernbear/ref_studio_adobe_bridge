@@ -48,6 +48,18 @@ const JsonPrimitive = z.union([
 const JsonValue: z.ZodType<unknown> = z.lazy(() =>
   z.union([JsonPrimitive, z.array(JsonValue), z.record(z.string(), JsonValue)]),
 );
+export const PROPERTY_IDS = [
+  "ADBE Anchor Point",
+  "ADBE Position",
+  "ADBE Scale",
+  "ADBE Rotate Z",
+  "ADBE Opacity",
+] as const;
+export const EFFECT_IDS = ["ADBE Drop Shadow"] as const;
+export const EFFECT_TEMPLATE_IDS = ["drop-shadow-v1"] as const;
+export const EXPRESSION_TEMPLATE_IDS = ["loop-cycle-v1"] as const;
+const PropertyId = z.enum(PROPERTY_IDS);
+const ApprovedProperties = z.partialRecord(PropertyId, JsonValue);
 
 export const ApprovedArgsSchema = z
   .object({
@@ -69,13 +81,14 @@ export const ApprovedArgsSchema = z
         z.number().min(0).max(1),
       ])
       .optional(),
-    properties: z.record(z.string(), JsonValue).optional(),
+    properties: ApprovedProperties.optional(),
+    propertyId: PropertyId.optional(),
     layers: z
       .array(
         z
           .object({
             layerHandle: Handle,
-            properties: z.record(z.string(), JsonValue),
+            properties: ApprovedProperties,
           })
           .strict(),
       )
@@ -85,7 +98,7 @@ export const ApprovedArgsSchema = z
       .array(
         z
           .object({
-            property: z.string().min(1),
+            property: PropertyId,
             frame: z.number().int().min(0),
             value: JsonValue,
             easing: z
@@ -106,9 +119,14 @@ export const ApprovedArgsSchema = z
       })
       .strict()
       .optional(),
-    effectId: Identifier.optional(),
-    templateId: Identifier.optional(),
-    parameters: z.record(z.string(), JsonValue).optional(),
+    effectId: z.enum(EFFECT_IDS).optional(),
+    templateId: z
+      .union([z.enum(EFFECT_TEMPLATE_IDS), z.enum(EXPRESSION_TEMPLATE_IDS)])
+      .optional(),
+    parameters: z
+      .object({ property: PropertyId.optional() })
+      .strict()
+      .optional(),
     outputName: z
       .string()
       .min(1)
@@ -131,7 +149,59 @@ export const AdobeCommandEnvelopeSchema = z
     tool: z.enum(TOOL_NAMES),
     args: ApprovedArgsSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((command, context) => {
+    if (
+      command.tool === "adobe.effect.apply_v1" &&
+      command.args.effectId === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["args", "effectId"],
+        message: "approved effect required",
+      });
+    }
+    if (
+      command.tool === "adobe.effect.apply_template_v1" &&
+      command.args.templateId !== "drop-shadow-v1"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["args", "templateId"],
+        message: "unapproved effect template",
+      });
+    }
+    if (
+      command.tool === "adobe.expression.apply_template_v1" &&
+      command.args.templateId !== "loop-cycle-v1"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["args", "templateId"],
+        message: "unapproved expression template",
+      });
+    }
+    if (
+      command.tool === "adobe.expression.apply_template_v1" &&
+      command.args.parameters?.property === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["args", "parameters", "property"],
+        message: "approved expression property required",
+      });
+    }
+    if (
+      command.tool === "adobe.expression.remove_v1" &&
+      command.args.propertyId === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["args", "propertyId"],
+        message: "approved expression property required",
+      });
+    }
+  });
 
 export type AdobeCommandEnvelope = z.infer<typeof AdobeCommandEnvelopeSchema>;
 export const StoredCommandSchema = AdobeCommandEnvelopeSchema.extend({

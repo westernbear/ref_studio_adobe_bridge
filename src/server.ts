@@ -4,7 +4,8 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { AdobeCommandEnvelopeSchema, TOOL_NAMES } from "./contracts.js";
+import { enqueueToolCall } from "./connector.js";
+import { TOOL_NAMES } from "./contracts.js";
 import { CommandSpool } from "./spool.js";
 
 const INPUT_SCHEMA = {
@@ -47,22 +48,10 @@ export const createServer = (spoolRoot: string): Server => {
     })),
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const envelope = AdobeCommandEnvelopeSchema.parse({
-      ...request.params.arguments,
-      tool: request.params.name,
+    return enqueueToolCall(spool, {
+      name: request.params.name,
+      arguments: request.params.arguments,
     });
-    const queued = await spool.enqueue(envelope);
-    return {
-      content: [
-        {
-          type: "text",
-          text: JSON.stringify({
-            commandId: queued.commandId,
-            status: queued.status,
-          }),
-        },
-      ],
-    };
   });
   return server;
 };

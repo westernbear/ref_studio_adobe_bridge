@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommandSpool } from "../src/spool.js";
@@ -74,6 +74,40 @@ describe("atomic command spool", () => {
         ),
       ).status,
     ).toBe("QUEUED");
+  });
+
+  test("recovered command is claimed and completed exactly once", async () => {
+    // Given
+    const root = await mkdtemp(join(tmpdir(), "rvs-spool-"));
+    const spool = new CommandSpool(root);
+    await spool.enqueue(command);
+    await spool.claimNext();
+    await spool.recover();
+    expect(
+      (await readdir(join(root, "commands"))).some((name) =>
+        name.endsWith(".running.json"),
+      ),
+    ).toBe(false);
+
+    // When
+    const recovered = await spool.claimNext();
+    await spool.complete({
+      version: 1,
+      commandId: command.commandId,
+      nonce: command.nonce,
+      sceneDigest: command.sceneDigest,
+      status: "SUCCEEDED",
+      beforeDigest: command.sceneDigest,
+      afterDigest: command.sceneDigest,
+      changedFields: [],
+      warnings: [],
+      payload: {},
+    });
+
+    // Then
+    expect(recovered?.status).toBe("RUNNING");
+    expect(await spool.claimNext()).toBeUndefined();
+    expect((await spool.result(command)).status).toBe("SUCCEEDED");
   });
 
   test("rejects replay from another device or job", async () => {

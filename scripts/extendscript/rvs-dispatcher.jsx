@@ -1,5 +1,21 @@
 (function (global) {
+  var PROPERTY_IDS = { "ADBE Anchor Point": true, "ADBE Position": true, "ADBE Scale": true, "ADBE Rotate Z": true, "ADBE Opacity": true };
+  var EFFECT_IDS = { "ADBE Drop Shadow": true };
+  var EFFECT_TEMPLATES = { "drop-shadow-v1": true };
+  var EXPRESSION_TEMPLATES = { "loop-cycle-v1": true };
   function fail(message) { throw new Error(message); }
+  function validateProperties(values) {
+    for (var key in values) if (values.hasOwnProperty(key) && !PROPERTY_IDS[key]) fail("unknown property: " + key);
+  }
+  function validateCommand(command) {
+    var args = command.args;
+    if (args.properties) validateProperties(args.properties);
+    if (args.layers) for (var i = 0; i < args.layers.length; i += 1) validateProperties(args.layers[i].properties);
+    if (args.keyframes) for (var j = 0; j < args.keyframes.length; j += 1) if (!PROPERTY_IDS[args.keyframes[j].property]) fail("unknown property: " + args.keyframes[j].property);
+    if (command.tool === "adobe.effect.apply_v1" && !EFFECT_IDS[args.effectId]) fail("unapproved effectId");
+    if (command.tool === "adobe.effect.apply_template_v1" && !EFFECT_TEMPLATES[args.templateId]) fail("unapproved effect templateId");
+    if (command.tool === "adobe.expression.apply_template_v1" && !EXPRESSION_TEMPLATES[args.templateId]) fail("unapproved expression templateId");
+  }
   function comp(handle) {
     var id = Number(String(handle).split(":")[1]);
     for (var i = 1; i <= app.project.numItems; i += 1) {
@@ -36,6 +52,7 @@
     return shapeLayer;
   }
   function execute(command) {
+    validateCommand(command);
     var a = command.args;
     switch (command.tool) {
       case "adobe.project.get_v1": return { name: app.project.file ? app.project.file.name : null, itemCount: app.project.numItems };
@@ -77,7 +94,7 @@
         if (!effect) fail("effect unavailable"); return { effectName: effect.name };
       case "adobe.effect.apply_template_v1": return applyTemplate(layer(a), "effect", a.templateId, a.parameters);
       case "adobe.expression.apply_template_v1": return applyTemplate(layer(a), "expression", a.templateId, a.parameters);
-      case "adobe.expression.remove_v1": layer(a).property(a.properties.property).expression = ""; return {};
+      case "adobe.expression.remove_v1": layer(a).property(a.propertyId).expression = ""; return {};
       case "adobe.command.status_v1": return { commandId: a.commandId, status: "RUNNING" };
       case "adobe.command.cancel_v1": return { commandId: a.commandId, cancelled: false };
       case "adobe.verify_v1": return { projectOpen: app.project.file !== null, expectedSceneDigest: a.expectedSceneDigest };

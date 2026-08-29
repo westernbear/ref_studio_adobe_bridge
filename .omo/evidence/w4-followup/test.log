@@ -1,0 +1,30 @@
+bun test v1.3.14 (0d9b296a)
+
+test/e2e.test.ts:
+(pass) CLI queues and locally completes one MCP command without changing original AEP [279.75ms]
+(pass) MCP stdio lists tools and queues a bound command [186.70ms]
+
+test/transports.test.ts:
+(pass) stdio and authenticated cloud relay produce the same golden response [1.98ms]
+(pass) stdio and authenticated cloud tools call enqueue equivalent contracts [10.25ms]
+
+test/installer.test.ts:
+(pass) signed installer copies only the fixed allowlist without a shell [2.97ms]
+
+test/contracts.test.ts:
+(pass) Adobe command boundary > accepts every exact versioned tool [1.69ms]
+(pass) Adobe command boundary > rejects unknown fields and forbidden cloud input before mutation [2.59ms]
+(pass) Adobe command boundary > rejects unknown properties effects and templates before mutation [1.71ms]
+(pass) Adobe command boundary > result rejects unknown fields [0.23ms]
+
+test/spool.test.ts:
+(pass) atomic command spool > moves pending to running and binds result to nonce and digest [1.81ms]
+(pass) atomic command spool > does not reuse stale result for repeated command id [1.39ms]
+(pass) atomic command spool > recovers a running command after restart [1.52ms]
+(pass) atomic command spool > recovered command is claimed and completed exactly once [2.87ms]
+(pass) atomic command spool > rejects replay from another device or job [0.79ms]
+
+ 14 pass
+ 0 fail
+ 66 expect() calls
+Ran 14 tests across 5 files. [631.00ms]

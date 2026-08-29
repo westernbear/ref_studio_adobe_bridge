@@ -1,0 +1,3 @@
+verified_commit=1eedbc43488929cb5bc6a69358c0a3f5235a4bdb
+branch=main
+untracked=?? .omo/evidence/w4-followup/

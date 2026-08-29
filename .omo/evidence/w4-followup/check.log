@@ -1,0 +1,2 @@
+$ biome check . && tsc --noEmit
+Checked 17 files in 10ms. No fixes applied.

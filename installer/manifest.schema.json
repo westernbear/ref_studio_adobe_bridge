@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "files", "signature"],
+  "properties": {
+    "version": { "const": 1 },
+    "files": {
+      "const": [
+        "scripts/panel/RVSBridgePanel.jsx",
+        "scripts/extendscript/rvs-dispatcher.jsx"
+      ]
+    },
+    "signature": { "type": "string", "contentEncoding": "base64" }
+  }
+}

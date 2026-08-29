@@ -1,0 +1,23 @@
+{
+  "name": "ref-studio-adobe-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "rvs-adobe-bridge": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "bun build src/cli.ts --target=node --outdir=dist",
+    "check": "biome check . && tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.4",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.2",
+    "@types/bun": "^1.2.21",
+    "typescript": "^5.9.2"
+  }
+}

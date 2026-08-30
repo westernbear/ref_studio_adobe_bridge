@@ -50,9 +50,30 @@ export class CommandSpool {
     await rename(temporary, path);
   }
 
+  async #storedCommand(
+    path: string,
+  ): Promise<QueuedCommand | RunningCommand | undefined> {
+    try {
+      return StoredCommandSchema.parse(parseJson(await readFile(path, "utf8")));
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+        return undefined;
+      throw error;
+    }
+  }
+
+  #assertStoredMatches(
+    stored: QueuedCommand | RunningCommand,
+    command: AdobeCommandEnvelope,
+  ): void {
+    const { status: _status, ...envelope } = stored;
+    if (JSON.stringify(envelope) !== JSON.stringify(command))
+      throw new BindingError(command.commandId);
+  }
+
   public async enqueue(
     input: unknown,
-  ): Promise<QueuedCommand | AdobeCommandResult> {
+  ): Promise<QueuedCommand | RunningCommand | AdobeCommandResult> {
     const command = AdobeCommandEnvelopeSchema.parse(input);
     await this.#init();
     const bindingPath = join(this.#bindings, `${command.commandId}.json`);
@@ -62,6 +83,7 @@ export class CommandSpool {
       deviceId: command.deviceId,
       jobId: command.jobId,
     };
+    let ownsAdmission = true;
     try {
       await writeFile(bindingPath, `${JSON.stringify(binding)}\n`, {
         flag: "wx",
@@ -77,6 +99,7 @@ export class CommandSpool {
       const existing = parseJson(await readFile(bindingPath, "utf8"));
       if (JSON.stringify(existing) !== JSON.stringify(binding))
         throw new BindingError(command.commandId);
+      ownsAdmission = false;
     }
     try {
       const terminal = AdobeCommandResultSchema.parse(
@@ -103,7 +126,22 @@ export class CommandSpool {
       )
         throw error;
     }
+    const running = await this.#storedCommand(
+      join(this.#commands, `${command.commandId}.running.json`),
+    );
+    if (running !== undefined) {
+      this.#assertStoredMatches(running, command);
+      return running;
+    }
+    const pending = await this.#storedCommand(
+      join(this.#commands, `${command.commandId}.pending.json`),
+    );
+    if (pending !== undefined) {
+      this.#assertStoredMatches(pending, command);
+      return pending;
+    }
     const queued = { ...command, status: "QUEUED" as const };
+    if (!ownsAdmission) return queued;
     await this.#writeAtomic(
       join(this.#commands, `${command.commandId}.pending.json`),
       queued,

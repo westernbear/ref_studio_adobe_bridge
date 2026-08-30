@@ -182,4 +182,39 @@ describe("atomic command spool", () => {
       spool.enqueue({ ...command, sceneDigest: "b".repeat(64) }),
     ).rejects.toThrow("binding");
   });
+
+  test("returns the running command without creating duplicate pending work", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rvs-spool-"));
+    const spool = new CommandSpool(root);
+    await spool.enqueue(command);
+    const running = await spool.claimNext();
+    if (running === undefined) throw new TypeError("command was not claimed");
+
+    expect(await spool.enqueue(command)).toEqual(running);
+    expect(await readdir(join(root, "commands"))).toEqual([
+      `${command.commandId}.running.json`,
+    ]);
+    expect(
+      spool.enqueue({ ...command, nonce: "nonce-running-other" }),
+    ).rejects.toThrow("binding");
+    expect(
+      spool.enqueue({ ...command, sceneDigest: "b".repeat(64) }),
+    ).rejects.toThrow("binding");
+  });
+
+  test("concurrent identical enqueue creates one pending lifecycle", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rvs-spool-"));
+    const spool = new CommandSpool(root);
+
+    const admitted = await Promise.all(
+      Array.from({ length: 20 }, () => spool.enqueue(command)),
+    );
+
+    expect(admitted.every(({ status }) => status === "QUEUED")).toBe(true);
+    expect(await readdir(join(root, "commands"))).toEqual([
+      `${command.commandId}.pending.json`,
+    ]);
+    expect((await spool.claimNext())?.status).toBe("RUNNING");
+    expect(await spool.claimNext()).toBeUndefined();
+  });
 });

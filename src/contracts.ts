@@ -308,6 +308,9 @@ export const AdobeCommandResultV1Schema = z
     mp4: z
       .object({
         sha256: DigestSchema,
+        codec: z.literal("h264"),
+        profile: z.literal("High"),
+        frameCount: FiniteSchema.int().positive(),
         durationSeconds: FiniteSchema.positive(),
         width: FiniteSchema.int().positive(),
         height: FiniteSchema.int().positive(),

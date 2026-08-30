@@ -11,6 +11,7 @@ type Fixture = {
     state: (message: string) => void,
   ): Controller;
   isWorkingCopy(path: string): boolean;
+  setDispatch(dispatch: () => Value): void;
 };
 
 const command = (tool = "adobe.project.get_v1"): Value => ({
@@ -87,7 +88,12 @@ const loadFixture = (): Fixture => {
     ),
     context,
   );
-  return context["RVSPanelFixture"] as Fixture;
+  return {
+    ...(context["RVSPanelFixture"] as Fixture),
+    setDispatch: (dispatch) => {
+      context["RVSDispatch"] = dispatch;
+    },
+  };
 };
 const setup = (tool = "adobe.project.get_v1") => {
   const values = new Map<string, Value>();
@@ -144,7 +150,23 @@ test("panel executes queued readonly command and writes SUCCEEDED result", () =>
       .runNext(false),
   ).toBe(true);
   expect(values.get("results/cmd-panel-01.json")?.["status"]).toBe("SUCCEEDED");
+  expect(states).toContain("cmd-panel-01 QUEUED");
   expect(states).toContain("cmd-panel-01 RUNNING");
+});
+
+test("panel retains CANCELLED when shutdown races a returning dispatch", () => {
+  const fixture = loadFixture();
+  const { values, io, binding } = setup("adobe.rollback_v1");
+  let controller: Controller;
+  fixture.setDispatch(() => {
+    controller.shutdown();
+    return { late: true };
+  });
+  controller = fixture.createController(io, binding, () => {});
+  expect(controller.runNext(true)).toBe(true);
+  expect(values.get("results/cmd-panel-01.json")?.["status"]).toBe("CANCELLED");
+  expect(values.has("mutation.lock.json")).toBe(false);
+  expect(values.has("commands/cmd-panel-01.running.json")).toBe(false);
 });
 
 test("panel requires explicit confirmation for mutation", () => {

@@ -26,6 +26,7 @@
       if (pending.length === 0) { emit("Idle"); return false; }
       pending.sort(); var source = "commands/" + pending[0], command = io.read(source);
       if (!command || command.status !== "QUEUED") { emit("Refused: malformed QUEUED command"); return false; }
+      emit(command.commandId + " QUEUED");
       try { assertBinding(binding, command, io.spoolRoot(), io.workingCopyPath()); } catch (error) { emit("Refused: " + error); return false; }
       var commandBinding = io.read("bindings/" + command.commandId + ".json");
       if (!commandBinding || commandBinding.nonce !== command.nonce || commandBinding.deviceId !== command.deviceId || commandBinding.jobId !== command.jobId || commandBinding.sceneDigest !== command.sceneDigest) { emit("Refused: command binding mismatch"); return false; }
@@ -33,7 +34,7 @@
       if (io.read("mutation.lock.json")) { emit("Waiting: mutation lock"); return false; }
       if (!io.rename(source, "commands/" + command.commandId + ".running.json")) return false;
       io.write("mutation.lock.json", { commandId: command.commandId, acquiredAtMs: io.now(), leaseExpiresAtMs: io.now() + 30000 }); active = command; emit(command.commandId + " RUNNING");
-      try { app.beginUndoGroup("RVS " + command.commandId); var payload = RVSDispatch(command); app.endUndoGroup(); complete(command, "SUCCEEDED", "", payload); } catch (error) { try { app.endUndoGroup(); } catch (ignored) {} complete(command, "FAILED", error, {}); }
+      try { app.beginUndoGroup("RVS " + command.commandId); var payload = RVSDispatch(command); app.endUndoGroup(); if (active && active.commandId === command.commandId) complete(command, "SUCCEEDED", "", payload); } catch (error) { try { app.endUndoGroup(); } catch (ignored) {} if (active && active.commandId === command.commandId) complete(command, "FAILED", error, {}); }
       return true;
     }
     return { runNext: next, shutdown: function () { if (active) complete(active, "CANCELLED", "panel shutdown", {}); emit("CANCELLED"); }, active: function () { return active; } };

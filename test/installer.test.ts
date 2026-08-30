@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdir, mkdtemp, readFile, stat } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { runInNewContext } from "node:vm";
 import {
   activeSignedPanelRelease,
+  directPanelEntryPath,
   InstallerInterruptedError,
   installSignedPanel,
   supportedAfterEffectsRoots,
@@ -18,7 +21,10 @@ const files = [
 const sha256 = (value: string): string =>
   new Bun.CryptoHasher("sha256").update(value).digest("hex");
 
-const fixture = async (): Promise<{
+const fixture = async (
+  baseRoot?: string,
+): Promise<{
+  readonly root: string;
   readonly source: string;
   readonly aeRoot: string;
   readonly publicKey: string;
@@ -26,7 +32,7 @@ const fixture = async (): Promise<{
     input?: Readonly<Record<string, unknown>>,
   ) => Record<string, unknown>;
 }> => {
-  const root = await mkdtemp(join(tmpdir(), "rvs-installer-"));
+  const root = await mkdtemp(join(baseRoot ?? tmpdir(), "rvs-installer-"));
   const source = join(root, "source");
   const aeRoot = join(root, "Adobe After Effects 2026");
   await mkdir(join(source, "scripts/panel"), { recursive: true });
@@ -57,6 +63,7 @@ const fixture = async (): Promise<{
     };
   };
   return {
+    root,
     source,
     aeRoot,
     publicKey: keys.publicKey
@@ -64,6 +71,54 @@ const fixture = async (): Promise<{
       .toString(),
     signManifest,
   };
+};
+
+const executeDirectPanel = (
+  entryPath: string,
+): { readonly evaluated: string | null } => {
+  let evaluated: string | null = null;
+  const openFiles = new Map<string, { content: string; position: number }>();
+  runInNewContext(
+    readFileSync(entryPath, "utf8"),
+    {
+      $: {
+        fileName: entryPath,
+        evalFile: (file: { fullName: string }) => {
+          evaluated = file.fullName;
+        },
+      },
+      File: (input: string | { fullName: string }) => {
+        const path = typeof input === "string" ? input : input.fullName;
+        return {
+          fullName: path,
+          parent: { fullName: dirname(path) },
+          exists: existsSync(path),
+          open(mode: string) {
+            if (mode !== "r" || !existsSync(path)) return false;
+            openFiles.set(path, {
+              content: readFileSync(path, "utf8"),
+              position: 0,
+            });
+            return true;
+          },
+          read() {
+            const opened = openFiles.get(path);
+            if (!opened) return "";
+            const content = opened.content.slice(opened.position);
+            opened.position = opened.content.length;
+            return content;
+          },
+          close() {
+            openFiles.delete(path);
+          },
+        };
+      },
+      JSON,
+      Error,
+    },
+    { filename: entryPath },
+  );
+  return { evaluated };
 };
 
 test("installs only signed hash-pinned panel files into the fixed ScriptUI location", async () => {
@@ -113,6 +168,34 @@ test("installs only signed hash-pinned panel files into the fixed ScriptUI locat
       )
     ).mode & 0o777,
   ).toBe(0o644);
+  expect(existsSync(directPanelEntryPath(setup.aeRoot))).toBe(true);
+});
+
+test("installs a discoverable ScriptUI loader that executes the active release panel", async () => {
+  // Given
+  const setup = await fixture();
+
+  // When
+  await installSignedPanel(
+    setup.source,
+    setup.aeRoot,
+    setup.signManifest(),
+    setup.publicKey,
+  );
+  const entry = directPanelEntryPath(setup.aeRoot);
+  const executed = executeDirectPanel(entry);
+  const release = await activeSignedPanelRelease(setup.aeRoot);
+
+  // Then
+  expect(existsSync(entry)).toBe(true);
+  expect(executed.evaluated).toBe(
+    join(
+      setup.aeRoot,
+      "Scripts/ScriptUI Panels/RVSBridge/releases",
+      release ?? "",
+      "RVSBridgePanel.jsx",
+    ),
+  );
 });
 
 test("rejects traversal, unknown files, invalid signatures, hashes, and unsupported AE versions before mutation", async () => {
@@ -151,6 +234,7 @@ test("rejects traversal, unknown files, invalid signatures, hashes, and unsuppor
       installSignedPanel(setup.source, setup.aeRoot, manifest, setup.publicKey),
     ).rejects.toThrow();
   }
+  expect(existsSync(directPanelEntryPath(setup.aeRoot))).toBe(false);
 });
 
 test("keeps the prior release active across an interruption before the one-file pointer transition", async () => {
@@ -180,6 +264,14 @@ test("keeps the prior release active across an interruption before the one-file 
 
   // Then
   expect(await activeSignedPanelRelease(setup.aeRoot)).toBe(before);
+  expect(executeDirectPanel(directPanelEntryPath(setup.aeRoot)).evaluated).toBe(
+    join(
+      setup.aeRoot,
+      "Scripts/ScriptUI Panels/RVSBridge/releases",
+      before ?? "",
+      "RVSBridgePanel.jsx",
+    ),
+  );
   await installSignedPanel(
     setup.source,
     setup.aeRoot,
@@ -197,6 +289,44 @@ test("keeps the prior release active across an interruption before the one-file 
       "utf8",
     ),
   ).toBe("panel v2");
+});
+
+test("installs when After Effects root is on a different volume from system temp", async () => {
+  // Given — source on /tmp (root FS), AE root on /dev/shm (tmpfs)
+  const sourceSetup = await fixture("/tmp");
+  const aeHost = await mkdtemp(join("/dev/shm", "rvs-ae-"));
+  const aeRoot = join(aeHost, "Adobe After Effects 2026");
+  try {
+    // When
+    await installSignedPanel(
+      sourceSetup.source,
+      aeRoot,
+      sourceSetup.signManifest(),
+      sourceSetup.publicKey,
+    );
+
+    // Then
+    const release = await activeSignedPanelRelease(aeRoot);
+    expect(release).toBeTruthy();
+    expect(existsSync(directPanelEntryPath(aeRoot))).toBe(true);
+    expect(executeDirectPanel(directPanelEntryPath(aeRoot)).evaluated).toBe(
+      join(
+        aeRoot,
+        "Scripts/ScriptUI Panels/RVSBridge/releases",
+        release ?? "",
+        "RVSBridgePanel.jsx",
+      ),
+    );
+    const releases = join(aeRoot, "Scripts/ScriptUI Panels/RVSBridge/releases");
+    expect(
+      (await readdir(releases)).filter((name) =>
+        name.startsWith(".rvs-adobe-install-"),
+      ),
+    ).toEqual([]);
+  } finally {
+    await rm(aeHost, { recursive: true, force: true });
+    await rm(sourceSetup.root, { recursive: true, force: true });
+  }
 });
 
 test("enumerates canonical roots and rejects a malformed Windows root", async () => {

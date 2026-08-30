@@ -9,7 +9,6 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { basename, join, win32 } from "node:path";
 import { z } from "zod";
 
@@ -18,6 +17,24 @@ const INSTALL_FILES = [
   "scripts/extendscript/rvs-dispatcher.jsx",
 ] as const;
 const TARGET_FILES = ["RVSBridgePanel.jsx", "rvs-dispatcher.jsx"] as const;
+/** Stable ScriptUI entry AE discovers; resolves RVSBridge/current.json. */
+export const DIRECT_PANEL_FILE = "RVSBridgePanel.jsx";
+const DIRECT_PANEL_LOADER = [
+  "(function () {",
+  "  var panels = File($.fileName).parent;",
+  '  var pointer = File(panels.fullName + "/RVSBridge/current.json");',
+  '  if (!pointer.exists) throw new Error("RVSBridge current.json missing");',
+  '  if (!pointer.open("r")) throw new Error("RVSBridge current.json unreadable");',
+  "  var raw = pointer.read();",
+  "  pointer.close();",
+  "  var active = JSON.parse(raw);",
+  '  if (!active || typeof active.release !== "string") throw new Error("RVSBridge current.json invalid");',
+  '  var panel = File(panels.fullName + "/RVSBridge/releases/" + active.release + "/RVSBridgePanel.jsx");',
+  '  if (!panel.exists) throw new Error("RVSBridge release panel missing");',
+  "  $.evalFile(panel);",
+  "}());",
+  "",
+].join("\n");
 const SUPPORTED_AE_VERSIONS = ["2024", "2025", "2026"] as const;
 const PLATFORM_NAMES = ["darwin", "linux", "win32"] as const;
 type AdobePlatform = (typeof PLATFORM_NAMES)[number];
@@ -156,6 +173,8 @@ export const discoverInstalledAfterEffectsRoots = async (
   return found.filter((candidate): candidate is string => candidate !== null);
 };
 
+const scriptUiPanels = (afterEffectsRoot: string): string =>
+  join(afterEffectsRoot, "Scripts", "ScriptUI Panels");
 const releaseRoot = (destination: string): string =>
   join(destination, "RVSBridge");
 const pointerPath = (destination: string): string =>
@@ -163,10 +182,13 @@ const pointerPath = (destination: string): string =>
 const releasePath = (destination: string, release: string): string =>
   join(releaseRoot(destination), "releases", release);
 
+export const directPanelEntryPath = (afterEffectsRoot: string): string =>
+  join(scriptUiPanels(afterEffectsRoot), DIRECT_PANEL_FILE);
+
 export const activeSignedPanelRelease = async (
   afterEffectsRoot: string,
 ): Promise<string | null> => {
-  const destination = join(afterEffectsRoot, "Scripts", "ScriptUI Panels");
+  const destination = scriptUiPanels(afterEffectsRoot);
   try {
     return PointerSchema.parse(
       JSON.parse(await readFile(pointerPath(destination), "utf8")),
@@ -176,6 +198,16 @@ export const activeSignedPanelRelease = async (
       return null;
     throw error;
   }
+};
+
+const activateDirectPanelLoader = async (
+  destination: string,
+  release: string,
+): Promise<void> => {
+  const loaderStage = join(destination, `.${DIRECT_PANEL_FILE}-${release}.tmp`);
+  await writeFile(loaderStage, DIRECT_PANEL_LOADER, { mode: 0o644 });
+  await chmod(loaderStage, 0o644);
+  await rename(loaderStage, join(destination, DIRECT_PANEL_FILE));
 };
 
 export const installSignedPanel = async (
@@ -209,12 +241,13 @@ export const installSignedPanel = async (
       return content;
     }),
   );
-  const destination = join(afterEffectsRoot, "Scripts", "ScriptUI Panels");
+  const destination = scriptUiPanels(afterEffectsRoot);
   const releases = join(releaseRoot(destination), "releases");
   const release = hash(payload(manifest));
   const finalRelease = releasePath(destination, release);
   await mkdir(releases, { recursive: true, mode: 0o755 });
-  const stage = await mkdtemp(join(tmpdir(), "rvs-adobe-install-"));
+  // Stage as a hidden sibling of the final release so rename stays same-FS.
+  const stage = await mkdtemp(join(releases, ".rvs-adobe-install-"));
   try {
     await Promise.all(
       contents.map((content, index) =>
@@ -248,6 +281,7 @@ export const installSignedPanel = async (
     );
     await writeFile(pointerStage, JSON.stringify({ release }), { mode: 0o644 });
     await rename(pointerStage, pointerPath(destination));
+    await activateDirectPanelLoader(destination, release);
   } finally {
     await rm(stage, { recursive: true, force: true });
   }

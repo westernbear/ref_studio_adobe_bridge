@@ -137,7 +137,16 @@ export const verifyRelayRequest = async (
     !timingSafeEqual(provided, expected)
   )
     throw new AuthenticationError("signature");
-  if (!isObject(body) || body["deviceId"] !== key.deviceId)
+  const directDevice = isObject(body) ? body["deviceId"] : undefined;
+  const params =
+    isObject(body) && isObject(body["params"]) ? body["params"] : undefined;
+  const argumentsValue =
+    params && isObject(params["arguments"]) ? params["arguments"] : undefined;
+  const commandDevice = argumentsValue?.["deviceId"];
+  if (
+    (directDevice !== undefined && directDevice !== key.deviceId) ||
+    (commandDevice !== undefined && commandDevice !== key.deviceId)
+  )
     throw new AuthenticationError("device binding");
   if (!(await verification.consumeNonce(signature.keyId, signature.nonce)))
     throw new AuthenticationError("replay");
@@ -167,18 +176,12 @@ export const dispatchJsonRpc = async (
 
 export const relayRequest = async (
   body: string,
-  signature: string,
-  secret: string,
+  signature: RelaySignatureV1,
+  verification: RelayVerification,
   spool?: CommandSpool,
 ): Promise<JsonRpcResponse> => {
-  const expected = createHmac("sha256", secret).update(body).digest();
-  const provided = Buffer.from(signature, "hex");
-  if (
-    provided.length !== expected.length ||
-    !timingSafeEqual(provided, expected)
-  )
-    throw new AuthenticationError();
   const parsed: unknown = JSON.parse(body);
+  await verifyRelayRequest(parsed, signature, verification);
   if (
     typeof parsed !== "object" ||
     parsed === null ||

@@ -50,7 +50,9 @@ export class CommandSpool {
     await rename(temporary, path);
   }
 
-  public async enqueue(input: unknown): Promise<QueuedCommand> {
+  public async enqueue(
+    input: unknown,
+  ): Promise<QueuedCommand | AdobeCommandResult> {
     const command = AdobeCommandEnvelopeSchema.parse(input);
     await this.#init();
     const bindingPath = join(this.#bindings, `${command.commandId}.json`);
@@ -75,6 +77,31 @@ export class CommandSpool {
       const existing = parseJson(await readFile(bindingPath, "utf8"));
       if (JSON.stringify(existing) !== JSON.stringify(binding))
         throw new BindingError(command.commandId);
+    }
+    try {
+      const terminal = AdobeCommandResultSchema.parse(
+        parseJson(
+          await readFile(
+            join(this.#results, `${command.commandId}.json`),
+            "utf8",
+          ),
+        ),
+      );
+      if (
+        terminal.nonce !== command.nonce ||
+        terminal.sceneDigest !== command.sceneDigest ||
+        terminal.deviceId !== command.deviceId ||
+        terminal.jobId !== command.jobId
+      )
+        throw new BindingError(command.commandId);
+      return terminal;
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !("code" in error) ||
+        error.code !== "ENOENT"
+      )
+        throw error;
     }
     const queued = { ...command, status: "QUEUED" as const };
     await this.#writeAtomic(

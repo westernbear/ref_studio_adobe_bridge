@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AdobeCommandResult } from "../src/contracts.js";
 import { CommandSpool } from "../src/spool.js";
 
 const command = {
@@ -130,7 +131,7 @@ describe("atomic command spool", () => {
     const spool = new CommandSpool(root);
     await spool.enqueue(command);
     await spool.claimNext();
-    const result = {
+    const result: AdobeCommandResult = {
       version: 1,
       commandId: command.commandId,
       nonce: command.nonce,
@@ -151,6 +152,34 @@ describe("atomic command spool", () => {
         deviceId: command.deviceId,
         jobId: "job-other",
       }),
+    ).rejects.toThrow("binding");
+  });
+
+  test("returns the terminal result without recreating pending work on identical replay", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rvs-spool-"));
+    const spool = new CommandSpool(root);
+    await spool.enqueue(command);
+    await spool.claimNext();
+    const result: AdobeCommandResult = {
+      version: 1,
+      commandId: command.commandId,
+      nonce: command.nonce,
+      sceneDigest: command.sceneDigest,
+      deviceId: command.deviceId,
+      jobId: command.jobId,
+      status: "SUCCEEDED",
+      beforeDigest: command.sceneDigest,
+      afterDigest: command.sceneDigest,
+      changedFields: [],
+      warnings: [],
+      payload: { completed: true },
+    };
+    await spool.complete(result);
+
+    expect(await spool.enqueue(command)).toEqual(result);
+    expect(await spool.claimNext()).toBeUndefined();
+    expect(
+      spool.enqueue({ ...command, sceneDigest: "b".repeat(64) }),
     ).rejects.toThrow("binding");
   });
 });

@@ -44,9 +44,16 @@
   function validateProperties(values) {
     for (var key in values) if (values.hasOwnProperty(key) && !PROPERTY_IDS[key]) fail("unknown property: " + key);
   }
+  function finitePositive(value, name) {
+    if (typeof value !== "number" || !isFinite(value) || value <= 0) fail("invalid numeric argument: " + name);
+  }
+  function exactKeys(value, allowed, label) {
+    for (var key in value) if (value.hasOwnProperty(key) && !allowed[key]) fail("unknown " + label + " field: " + key);
+  }
   function validateCommand(command) {
     for (var field in command) if (command.hasOwnProperty(field) && !TOP_LEVEL_KEYS[field]) fail("unknown command field: " + field);
     if (command.version !== 1 || command.projectHandle !== "project:working-copy" || !ARG_KEYS[command.tool]) fail("invalid command envelope");
+    if (typeof command.nonce !== "string" || !command.nonce || typeof command.deviceId !== "string" || !command.deviceId || typeof command.jobId !== "string" || !command.jobId) fail("missing command binding");
     var args = command.args;
     for (var arg in args) if (args.hasOwnProperty(arg) && !ARG_KEYS[command.tool][arg]) fail("unknown tool argument: " + arg);
     for (var required = 0; required < REQUIRED_KEYS[command.tool].length; required += 1)
@@ -54,6 +61,21 @@
     if (args.properties) validateProperties(args.properties);
     if (args.layers) for (var i = 0; i < args.layers.length; i += 1) validateProperties(args.layers[i].properties);
     if (args.keyframes) for (var j = 0; j < args.keyframes.length; j += 1) if (!PROPERTY_IDS[args.keyframes[j].property]) fail("unknown property: " + args.keyframes[j].property);
+    if (command.tool === "adobe.composition.create_v1") {
+      finitePositive(args.width, "width"); finitePositive(args.height, "height");
+      finitePositive(args.durationSeconds, "durationSeconds"); finitePositive(args.frameRate, "frameRate");
+    }
+    if (command.tool === "adobe.composition.update_v1") {
+      if (args.width !== undefined) finitePositive(args.width, "width");
+      if (args.height !== undefined) finitePositive(args.height, "height");
+      if (args.durationSeconds !== undefined) finitePositive(args.durationSeconds, "durationSeconds");
+      if (args.frameRate !== undefined) finitePositive(args.frameRate, "frameRate");
+    }
+    if (command.tool === "adobe.mask.set_v1" && args.mode !== "add" && args.mode !== "subtract" && args.mode !== "intersect") fail("invalid mask mode");
+    if (args.layers) for (var layerIndex = 0; layerIndex < args.layers.length; layerIndex += 1)
+      exactKeys(args.layers[layerIndex], { layerHandle: true, properties: true }, "batch layer");
+    if (args.keyframes) for (var keyframeIndex = 0; keyframeIndex < args.keyframes.length; keyframeIndex += 1)
+      exactKeys(args.keyframes[keyframeIndex], { property: true, frame: true, value: true, easing: true }, "keyframe");
     if (command.tool === "adobe.effect.apply_v1" && !EFFECT_IDS[args.effectId]) fail("unapproved effectId");
     if (command.tool === "adobe.effect.apply_template_v1" && !EFFECT_TEMPLATES[args.templateId]) fail("unapproved effect templateId");
     if (command.tool === "adobe.expression.apply_template_v1" && !EXPRESSION_TEMPLATES[args.templateId]) fail("unapproved expression templateId");

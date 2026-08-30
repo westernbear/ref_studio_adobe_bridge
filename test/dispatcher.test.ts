@@ -53,3 +53,55 @@ test("installed dispatcher rejects legacy and unknown argument shapes", () => {
   ])
     expect(() => dispatchFixture({ ...base, ...candidate })).toThrow();
 });
+
+test("installed dispatcher rejects malformed identity numeric enum and nested fields", () => {
+  const base = {
+    ...golden.commandBase,
+    commandId: "cmd-dispatch-deep-reject",
+  };
+  for (const candidate of [
+    { ...base, nonce: "", tool: "adobe.project.get_v1", args: {} },
+    { ...base, deviceId: "", tool: "adobe.project.get_v1", args: {} },
+    { ...base, jobId: "", tool: "adobe.project.get_v1", args: {} },
+    {
+      ...base,
+      tool: "adobe.composition.create_v1",
+      args: {
+        name: "Main",
+        width: "1920",
+        height: 1080,
+        durationSeconds: 15,
+        frameRate: 30,
+      },
+    },
+    {
+      ...base,
+      tool: "adobe.mask.set_v1",
+      args: {
+        compHandle: "comp:1",
+        layerHandle: "layer:1",
+        mode: "replace",
+        vertices: [
+          [0, 0],
+          [1, 0],
+          [1, 1],
+        ],
+      },
+    },
+    {
+      ...base,
+      tool: "adobe.layer.batch_set_properties_v1",
+      args: {
+        compHandle: "comp:1",
+        layers: [
+          {
+            layerHandle: "layer:1",
+            properties: { "ADBE Opacity": 80 },
+            surprise: true,
+          },
+        ],
+      },
+    },
+  ])
+    expect(() => dispatchFixture(candidate)).toThrow();
+});

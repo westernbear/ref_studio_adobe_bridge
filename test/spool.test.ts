@@ -5,6 +5,7 @@ import {
   mkdtemp,
   readdir,
   readFile,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -487,6 +488,48 @@ describe("atomic command spool", () => {
         })
       ).status,
     ).toBe("CANCELLED");
+  });
+
+  test("claim and cancel overlap leaves no residue and admits the next command", async () => {
+    for (let iteration = 0; iteration < 300; iteration += 1) {
+      // Given
+      const root = await mkdtemp(join(tmpdir(), "rvs-spool-overlap-"));
+      const spool = new CommandSpool(root);
+      const current = {
+        ...command,
+        commandId: `cmd-overlap-${String(iteration).padStart(8, "0")}`,
+        nonce: `nonce-overlap-${String(iteration).padStart(8, "0")}`,
+      };
+      const next = {
+        ...command,
+        commandId: `cmd-overlap-next-${String(iteration).padStart(8, "0")}`,
+        nonce: `nonce-overlap-next-${String(iteration).padStart(8, "0")}`,
+      };
+      await spool.enqueue(current);
+
+      // When
+      await Promise.all([spool.claimNext(), spool.cancel(current.commandId)]);
+
+      // Then
+      expect((await spool.result(current)).status).toBe("CANCELLED");
+      expect(
+        (await readdir(join(root, "commands"))).some(
+          (name) =>
+            name === `${current.commandId}.running.json` ||
+            name === `${current.commandId}.pending.json`,
+        ),
+      ).toBe(false);
+      expect(
+        (await readdir(root)).filter(
+          (name) =>
+            name === "mutation.lock.json" || name === "transition.lock.json",
+        ),
+      ).toEqual([]);
+      await spool.enqueue(next);
+      expect((await spool.claimNext())?.commandId).toBe(next.commandId);
+      await spool.cancel(next.commandId);
+      await rm(root, { recursive: true });
+    }
   });
 
   test("uses restrictive files and rejects malformed or oversized lifecycle data", async () => {

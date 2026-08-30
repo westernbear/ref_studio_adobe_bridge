@@ -17,6 +17,8 @@ import { BindingError, SpoolStateError } from "./errors.js";
 
 const MAX_FILE_BYTES = 1_048_576;
 const DEFAULT_LEASE_MS = 30_000;
+const TRANSITION_LEASE_MS = 30_000;
+const TRANSITION_WAIT_MS = 5_000;
 const TimestampSchema = z.number().int().nonnegative();
 const LifecycleSchema = StoredCommandSchema.and(
   z
@@ -49,6 +51,12 @@ const LockSchema = z
   })
   .strict()
   .refine((value) => value.leaseExpiresAtMs > value.acquiredAtMs);
+const TransitionSchema = z
+  .object({
+    token: z.string().uuid(),
+    expiresAtMs: TimestampSchema,
+  })
+  .strict();
 
 type SpoolOptions = {
   readonly leaseMs?: number;
@@ -63,6 +71,7 @@ export class CommandSpool {
   readonly #results: string;
   readonly #bindings: string;
   readonly #lock: string;
+  readonly #transition: string;
   readonly #leaseMs: number;
   readonly #now: () => number;
 
@@ -71,6 +80,7 @@ export class CommandSpool {
     this.#results = join(root, "results");
     this.#bindings = join(root, "bindings");
     this.#lock = join(root, "mutation.lock.json");
+    this.#transition = join(root, "transition.lock.json");
     this.#leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
     this.#now = options.now ?? Date.now;
     if (!Number.isSafeInteger(this.#leaseMs) || this.#leaseMs <= 0)
@@ -138,6 +148,96 @@ export class CommandSpool {
     } finally {
       await rm(temporary, { force: true });
     }
+  }
+
+  async #withTransition<T>(
+    commandId: string,
+    action: () => Promise<T>,
+  ): Promise<T> {
+    const token = randomUUID();
+    const deadline = Date.now() + TRANSITION_WAIT_MS;
+    while (
+      !(await this.#createExclusive(this.#transition, {
+        token,
+        expiresAtMs: Date.now() + TRANSITION_LEASE_MS,
+      }))
+    ) {
+      let existing: z.infer<typeof TransitionSchema>;
+      try {
+        existing = TransitionSchema.parse(
+          await this.#readBounded(
+            this.#transition,
+            commandId,
+            "transition lock",
+          ),
+        );
+      } catch (error) {
+        if (isFsError(error, "ENOENT")) continue;
+        if (error instanceof z.ZodError)
+          throw new SpoolStateError(commandId, "malformed transition lock");
+        throw error;
+      }
+      if (Date.now() > existing.expiresAtMs) {
+        const recovery = `${this.#transition}.${existing.token}.recovery`;
+        if (await this.#createExclusive(recovery, existing)) {
+          try {
+            const current = TransitionSchema.parse(
+              await this.#readBounded(
+                this.#transition,
+                commandId,
+                "transition lock",
+              ),
+            );
+            if (
+              current.token === existing.token &&
+              Date.now() > current.expiresAtMs
+            )
+              await rm(this.#transition, { force: true });
+          } catch (error) {
+            if (!isFsError(error, "ENOENT")) throw error;
+          } finally {
+            await rm(recovery, { force: true });
+          }
+        }
+        continue;
+      }
+      if (Date.now() >= deadline)
+        throw new SpoolStateError(commandId, "transition lock timeout");
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    try {
+      return await action();
+    } finally {
+      let existing: z.infer<typeof TransitionSchema> | undefined;
+      try {
+        existing = TransitionSchema.parse(
+          await this.#readBounded(
+            this.#transition,
+            commandId,
+            "transition lock",
+          ),
+        );
+      } catch (error) {
+        if (!isFsError(error, "ENOENT")) throw error;
+      }
+      if (existing?.token === token)
+        await rm(this.#transition, { force: true });
+    }
+  }
+
+  async #releaseMutationLock(commandId: string): Promise<void> {
+    let lock: z.infer<typeof LockSchema> | undefined;
+    try {
+      lock = LockSchema.parse(
+        await this.#readBounded(this.#lock, commandId, "mutation lock"),
+      );
+    } catch (error) {
+      if (isFsError(error, "ENOENT")) return;
+      if (error instanceof z.ZodError)
+        throw new SpoolStateError(commandId, "malformed mutation lock");
+      throw error;
+    }
+    if (lock.commandId === commandId) await rm(this.#lock, { force: true });
   }
 
   async #stored(
@@ -303,99 +403,109 @@ export class CommandSpool {
       .sort()[0];
     if (pending === undefined) return undefined;
     const commandId = pending.slice(0, -".pending.json".length);
-    const acquiredAtMs = this.#time(commandId);
-    const leaseExpiresAtMs = acquiredAtMs + this.#leaseMs;
-    if (
-      !(await this.#createExclusive(this.#lock, {
-        commandId,
-        acquiredAtMs,
-        leaseExpiresAtMs,
-      }))
-    )
-      return undefined;
-    const pendingPath = join(this.#commands, pending);
-    const runningPath = join(this.#commands, `${commandId}.running.json`);
-    try {
+    return this.#withTransition(commandId, async () => {
+      const pendingPath = join(this.#commands, pending);
+      const runningPath = join(this.#commands, `${commandId}.running.json`);
+      if ((await this.#terminal(commandId)) !== undefined) {
+        await rm(pendingPath, { force: true });
+        await rm(runningPath, { force: true });
+        await this.#releaseMutationLock(commandId);
+        return undefined;
+      }
       const queued = await this.#stored(
         pendingPath,
         commandId,
         "pending command",
       );
-      if (queued === undefined) {
-        await rm(this.#lock, { force: true });
-        return undefined;
-      }
+      if (queued === undefined) return undefined;
       if (queued.status !== "QUEUED")
         throw new SpoolStateError(commandId, "pending is not queued");
-      this.#time(commandId, queued.queuedAtMs);
-      const running = {
-        ...this.#envelope(queued),
-        status: "RUNNING" as const,
-        queuedAtMs: queued.queuedAtMs,
-        runningAtMs: acquiredAtMs,
-        leaseExpiresAtMs,
-      };
-      if (!(await this.#createExclusive(runningPath, running))) {
-        const existing = await this.#stored(
-          runningPath,
+      const acquiredAtMs = this.#time(commandId, queued.queuedAtMs);
+      const leaseExpiresAtMs = acquiredAtMs + this.#leaseMs;
+      if (
+        !(await this.#createExclusive(this.#lock, {
           commandId,
-          "running command",
-        );
-        if (existing === undefined)
-          throw new SpoolStateError(commandId, "running disappeared");
-        if (existing.status !== "RUNNING")
-          throw new SpoolStateError(commandId, "running is not active");
-        this.#assertStoredMatches(existing, this.#envelope(queued));
-        return { ...this.#envelope(existing), status: "RUNNING" };
+          acquiredAtMs,
+          leaseExpiresAtMs,
+        }))
+      )
+        return undefined;
+      try {
+        const running = {
+          ...this.#envelope(queued),
+          status: "RUNNING" as const,
+          queuedAtMs: queued.queuedAtMs,
+          runningAtMs: acquiredAtMs,
+          leaseExpiresAtMs,
+        };
+        if (!(await this.#createExclusive(runningPath, running))) {
+          const existing = await this.#stored(
+            runningPath,
+            commandId,
+            "running command",
+          );
+          if (existing === undefined || existing.status !== "RUNNING")
+            throw new SpoolStateError(commandId, "running disappeared");
+          this.#assertStoredMatches(existing, this.#envelope(queued));
+          return { ...this.#envelope(existing), status: "RUNNING" };
+        }
+        if ((await this.#terminal(commandId)) !== undefined) {
+          await rm(runningPath, { force: true });
+          await rm(pendingPath, { force: true });
+          await this.#releaseMutationLock(commandId);
+          return undefined;
+        }
+        await rm(pendingPath, { force: true });
+        return { ...this.#envelope(running), status: "RUNNING" };
+      } catch (error) {
+        await this.#releaseMutationLock(commandId);
+        throw error;
       }
-      await rm(pendingPath, { force: true });
-      return { ...this.#envelope(running), status: "RUNNING" };
-    } catch (error) {
-      await rm(this.#lock, { force: true });
-      throw error;
-    }
+    });
   }
 
   public async complete(input: unknown): Promise<AdobeCommandResult> {
     const result = AdobeCommandResultSchema.parse(input);
     await this.#init();
-    const terminal = await this.#terminal(result.commandId);
-    if (terminal !== undefined) {
-      this.#assertResultBinding(terminal, result);
-      return terminal;
-    }
-    const runningPath = join(
-      this.#commands,
-      `${result.commandId}.running.json`,
-    );
-    const running = await this.#stored(
-      runningPath,
-      result.commandId,
-      "running command",
-    );
-    if (running === undefined)
-      throw new SpoolStateError(result.commandId, "not running");
-    this.#assertResultBinding(result, running);
-    const { leaseExpiresAtMs, runningAtMs } = running;
-    if (leaseExpiresAtMs === undefined || runningAtMs === undefined)
-      throw new SpoolStateError(result.commandId, "running lease missing");
-    if (this.#time(result.commandId, runningAtMs) > leaseExpiresAtMs)
-      throw new SpoolStateError(result.commandId, "lease expired");
-    if (
-      !(await this.#createExclusive(
-        join(this.#results, `${result.commandId}.json`),
-        result,
-      ))
-    ) {
-      const winner = await this.#terminal(result.commandId);
-      if (winner === undefined)
-        throw new SpoolStateError(result.commandId, "result disappeared");
-      this.#assertResultBinding(winner, result);
-      return winner;
-    }
-    await rm(runningPath, { force: true });
-    await rm(this.#lock, { force: true });
-    return result;
+    return this.#withTransition(result.commandId, async () => {
+      const terminal = await this.#terminal(result.commandId);
+      if (terminal !== undefined) {
+        this.#assertResultBinding(terminal, result);
+        return terminal;
+      }
+      const runningPath = join(
+        this.#commands,
+        `${result.commandId}.running.json`,
+      );
+      const running = await this.#stored(
+        runningPath,
+        result.commandId,
+        "running command",
+      );
+      if (running === undefined)
+        throw new SpoolStateError(result.commandId, "not running");
+      this.#assertResultBinding(result, running);
+      const { leaseExpiresAtMs, runningAtMs } = running;
+      if (leaseExpiresAtMs === undefined || runningAtMs === undefined)
+        throw new SpoolStateError(result.commandId, "running lease missing");
+      if (this.#time(result.commandId, runningAtMs) > leaseExpiresAtMs)
+        throw new SpoolStateError(result.commandId, "lease expired");
+      if (
+        !(await this.#createExclusive(
+          join(this.#results, `${result.commandId}.json`),
+          result,
+        ))
+      ) {
+        const winner = await this.#terminal(result.commandId);
+        if (winner === undefined)
+          throw new SpoolStateError(result.commandId, "result disappeared");
+        this.#assertResultBinding(winner, result);
+        return winner;
+      }
+      await rm(runningPath, { force: true });
+      await this.#releaseMutationLock(result.commandId);
+      return result;
+    });
   }
 
   public async result(
@@ -411,117 +521,130 @@ export class CommandSpool {
 
   public async recover(): Promise<number> {
     await this.#init();
-    const now = this.#time("recovery");
-    const runningNames = (await readdir(this.#commands)).filter((name) =>
-      name.endsWith(".running.json"),
-    );
-    let recovered = 0;
-    for (const name of runningNames) {
-      const commandId = name.slice(0, -".running.json".length);
-      const runningPath = join(this.#commands, name);
-      const command = await this.#stored(
-        runningPath,
-        commandId,
-        "running command",
+    return this.#withTransition("recovery", async () => {
+      const now = this.#time("recovery");
+      const runningNames = (await readdir(this.#commands)).filter((name) =>
+        name.endsWith(".running.json"),
       );
-      if (command === undefined || command.status !== "RUNNING") continue;
-      const terminal = await this.#terminal(commandId);
-      if (terminal !== undefined) {
-        this.#assertResultBinding(terminal, command);
-        await rm(runningPath, { force: true });
-        await rm(this.#lock, { force: true });
-        recovered += 1;
-        continue;
-      }
-      const runningAtMs = command.runningAtMs;
-      const leaseExpiresAtMs = command.leaseExpiresAtMs;
-      if (runningAtMs === undefined || leaseExpiresAtMs === undefined)
-        throw new SpoolStateError(commandId, "running lease missing");
-      if (now < runningAtMs)
-        throw new SpoolStateError(commandId, "non-monotonic clock");
-      if (now <= leaseExpiresAtMs) continue;
-      const pendingPath = join(this.#commands, `${commandId}.pending.json`);
-      const queued = {
-        ...this.#envelope(command),
-        status: "QUEUED" as const,
-        queuedAtMs: command.queuedAtMs,
-      };
-      if (!(await this.#createExclusive(pendingPath, queued))) {
-        const existing = await this.#stored(
-          pendingPath,
+      let recovered = 0;
+      for (const name of runningNames) {
+        const commandId = name.slice(0, -".running.json".length);
+        const runningPath = join(this.#commands, name);
+        const command = await this.#stored(
+          runningPath,
           commandId,
-          "pending command",
+          "running command",
         );
-        if (existing === undefined)
-          throw new SpoolStateError(commandId, "pending disappeared");
-        this.#assertStoredMatches(existing, this.#envelope(command));
+        if (command === undefined || command.status !== "RUNNING") continue;
+        const terminal = await this.#terminal(commandId);
+        if (terminal !== undefined) {
+          this.#assertResultBinding(terminal, command);
+          await rm(runningPath, { force: true });
+          await rm(this.#lock, { force: true });
+          recovered += 1;
+          continue;
+        }
+        const runningAtMs = command.runningAtMs;
+        const leaseExpiresAtMs = command.leaseExpiresAtMs;
+        if (runningAtMs === undefined || leaseExpiresAtMs === undefined)
+          throw new SpoolStateError(commandId, "running lease missing");
+        if (now < runningAtMs)
+          throw new SpoolStateError(commandId, "non-monotonic clock");
+        if (now <= leaseExpiresAtMs) continue;
+        const pendingPath = join(this.#commands, `${commandId}.pending.json`);
+        const queued = {
+          ...this.#envelope(command),
+          status: "QUEUED" as const,
+          queuedAtMs: command.queuedAtMs,
+        };
+        if (!(await this.#createExclusive(pendingPath, queued))) {
+          const existing = await this.#stored(
+            pendingPath,
+            commandId,
+            "pending command",
+          );
+          if (existing === undefined)
+            throw new SpoolStateError(commandId, "pending disappeared");
+          this.#assertStoredMatches(existing, this.#envelope(command));
+        }
+        await rm(runningPath, { force: true });
+        recovered += 1;
       }
-      await rm(runningPath, { force: true });
-      recovered += 1;
-    }
-    let lock: z.infer<typeof LockSchema> | undefined;
-    try {
-      lock = LockSchema.parse(
-        await this.#readBounded(this.#lock, "mutation-lock", "mutation lock"),
-      );
-    } catch (error) {
-      if (!isFsError(error, "ENOENT")) {
-        if (error instanceof z.ZodError)
-          throw new SpoolStateError("mutation-lock", "malformed mutation lock");
-        throw error;
+      let lock: z.infer<typeof LockSchema> | undefined;
+      try {
+        lock = LockSchema.parse(
+          await this.#readBounded(this.#lock, "mutation-lock", "mutation lock"),
+        );
+      } catch (error) {
+        if (!isFsError(error, "ENOENT")) {
+          if (error instanceof z.ZodError)
+            throw new SpoolStateError(
+              "mutation-lock",
+              "malformed mutation lock",
+            );
+          throw error;
+        }
       }
-    }
-    if (lock !== undefined && now > lock.leaseExpiresAtMs)
-      await rm(this.#lock, { force: true });
-    return recovered;
+      if (lock !== undefined && now > lock.leaseExpiresAtMs)
+        await rm(this.#lock, { force: true });
+      return recovered;
+    });
   }
 
   public async cancel(commandId: string): Promise<void> {
     await this.#init();
-    if ((await this.#terminal(commandId)) !== undefined) return;
-    const pendingPath = join(this.#commands, `${commandId}.pending.json`);
-    const runningPath = join(this.#commands, `${commandId}.running.json`);
-    const pending = await this.#stored(
-      pendingPath,
-      commandId,
-      "pending command",
-    );
-    const running = await this.#stored(
-      runningPath,
-      commandId,
-      "running command",
-    );
-    const command = running ?? pending;
-    if (command === undefined)
-      throw new SpoolStateError(commandId, "not queued or running");
-    const envelope = this.#envelope(command);
-    const cancelled = AdobeCommandResultSchema.parse({
-      version: 1,
-      commandId,
-      nonce: envelope.nonce,
-      sceneDigest: envelope.sceneDigest,
-      deviceId: envelope.deviceId,
-      jobId: envelope.jobId,
-      status: "CANCELLED",
-      beforeDigest: envelope.sceneDigest,
-      afterDigest: envelope.sceneDigest,
-      changedFields: [],
-      warnings: [],
-      payload: {},
+    await this.#withTransition(commandId, async () => {
+      const terminal = await this.#terminal(commandId);
+      const pendingPath = join(this.#commands, `${commandId}.pending.json`);
+      const runningPath = join(this.#commands, `${commandId}.running.json`);
+      const pending = await this.#stored(
+        pendingPath,
+        commandId,
+        "pending command",
+      );
+      const running = await this.#stored(
+        runningPath,
+        commandId,
+        "running command",
+      );
+      const command = running ?? pending;
+      if (command === undefined && terminal === undefined)
+        throw new SpoolStateError(commandId, "not queued or running");
+      if (command === undefined) {
+        await this.#releaseMutationLock(commandId);
+        return;
+      }
+      const envelope = this.#envelope(command);
+      if (terminal !== undefined) this.#assertResultBinding(terminal, envelope);
+      const cancelled = AdobeCommandResultSchema.parse({
+        version: 1,
+        commandId,
+        nonce: envelope.nonce,
+        sceneDigest: envelope.sceneDigest,
+        deviceId: envelope.deviceId,
+        jobId: envelope.jobId,
+        status: "CANCELLED",
+        beforeDigest: envelope.sceneDigest,
+        afterDigest: envelope.sceneDigest,
+        changedFields: [],
+        warnings: [],
+        payload: {},
+      });
+      if (
+        terminal === undefined &&
+        !(await this.#createExclusive(
+          join(this.#results, `${commandId}.json`),
+          cancelled,
+        ))
+      ) {
+        const winner = await this.#terminal(commandId);
+        if (winner === undefined)
+          throw new SpoolStateError(commandId, "result disappeared");
+        this.#assertResultBinding(winner, envelope);
+      }
+      await rm(pendingPath, { force: true });
+      await rm(runningPath, { force: true });
+      await this.#releaseMutationLock(commandId);
     });
-    if (
-      !(await this.#createExclusive(
-        join(this.#results, `${commandId}.json`),
-        cancelled,
-      ))
-    ) {
-      const winner = await this.#terminal(commandId);
-      if (winner === undefined)
-        throw new SpoolStateError(commandId, "result disappeared");
-      this.#assertResultBinding(winner, envelope);
-    }
-    await rm(pendingPath, { force: true });
-    await rm(runningPath, { force: true });
-    if (running !== undefined) await rm(this.#lock, { force: true });
   }
 }

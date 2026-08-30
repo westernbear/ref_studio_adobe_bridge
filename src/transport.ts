@@ -16,7 +16,7 @@ type JsonRpcResponse = {
   readonly result: unknown;
 };
 
-const MAX_RELAY_BODY_BYTES = 262_144;
+const MAX_RELAY_BODY_BYTES = 262_144; // lockstep with RESOURCE_BUDGETS.maxRelayBodyBytes
 const DEFAULT_MAX_SKEW_MS = 300_000;
 
 export type RelaySignatureV1 = Readonly<{

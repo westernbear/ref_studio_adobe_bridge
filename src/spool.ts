@@ -15,7 +15,7 @@ import {
 } from "./contracts.js";
 import { BindingError, SpoolStateError } from "./errors.js";
 
-const MAX_FILE_BYTES = 1_048_576;
+const MAX_FILE_BYTES = 1_048_576; // lockstep with RESOURCE_BUDGETS.maxSpoolFileBytes
 const DEFAULT_LEASE_MS = 30_000;
 const TRANSITION_LEASE_MS = 30_000;
 const TRANSITION_WAIT_MS = 5_000;

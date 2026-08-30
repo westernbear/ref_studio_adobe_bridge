@@ -4,6 +4,8 @@ import { mkdir, mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  activeSignedPanelRelease,
+  InstallerInterruptedError,
   installSignedPanel,
   supportedAfterEffectsRoots,
 } from "../src/installer.js";
@@ -79,20 +81,35 @@ test("installs only signed hash-pinned panel files into the fixed ScriptUI locat
   // Then
   expect(
     await readFile(
-      join(setup.aeRoot, "Scripts/ScriptUI Panels/RVSBridgePanel.jsx"),
+      join(
+        setup.aeRoot,
+        "Scripts/ScriptUI Panels/RVSBridge/releases",
+        (await activeSignedPanelRelease(setup.aeRoot)) ?? "",
+        "RVSBridgePanel.jsx",
+      ),
       "utf8",
     ),
   ).toBe("panel");
   expect(
     await readFile(
-      join(setup.aeRoot, "Scripts/ScriptUI Panels/rvs-dispatcher.jsx"),
+      join(
+        setup.aeRoot,
+        "Scripts/ScriptUI Panels/RVSBridge/releases",
+        (await activeSignedPanelRelease(setup.aeRoot)) ?? "",
+        "rvs-dispatcher.jsx",
+      ),
       "utf8",
     ),
   ).toBe("dispatcher");
   expect(
     (
       await stat(
-        join(setup.aeRoot, "Scripts/ScriptUI Panels/RVSBridgePanel.jsx"),
+        join(
+          setup.aeRoot,
+          "Scripts/ScriptUI Panels/RVSBridge/releases",
+          (await activeSignedPanelRelease(setup.aeRoot)) ?? "",
+          "RVSBridgePanel.jsx",
+        ),
       )
     ).mode & 0o777,
   ).toBe(0o644);
@@ -136,31 +153,53 @@ test("rejects traversal, unknown files, invalid signatures, hashes, and unsuppor
   }
 });
 
-test("rolls back a partial destination replacement when the second fixed target cannot be replaced", async () => {
+test("keeps the prior release active across an interruption before the one-file pointer transition", async () => {
   // Given
   const setup = await fixture();
-  const destination = join(setup.aeRoot, "Scripts/ScriptUI Panels");
-  await mkdir(destination, { recursive: true });
-  await Bun.write(join(destination, "RVSBridgePanel.jsx"), "old panel");
-  await mkdir(join(destination, "rvs-dispatcher.jsx"));
+  await installSignedPanel(
+    setup.source,
+    setup.aeRoot,
+    setup.signManifest(),
+    setup.publicKey,
+  );
+  const before = await activeSignedPanelRelease(setup.aeRoot);
+  await Bun.write(join(setup.source, files[0].path), "panel v2");
+  const manifest = setup.signManifest({
+    files: [
+      { path: files[0].path, sha256: sha256("panel v2") },
+      { path: files[1].path, sha256: sha256("dispatcher") },
+    ],
+  });
 
   // When
   await expect(
-    installSignedPanel(
-      setup.source,
-      setup.aeRoot,
-      setup.signManifest(),
-      setup.publicKey,
-    ),
-  ).rejects.toThrow();
+    installSignedPanel(setup.source, setup.aeRoot, manifest, setup.publicKey, {
+      interruptBeforeActivation: true,
+    }),
+  ).rejects.toBeInstanceOf(InstallerInterruptedError);
 
   // Then
-  expect(await readFile(join(destination, "RVSBridgePanel.jsx"), "utf8")).toBe(
-    "old panel",
+  expect(await activeSignedPanelRelease(setup.aeRoot)).toBe(before);
+  await installSignedPanel(
+    setup.source,
+    setup.aeRoot,
+    manifest,
+    setup.publicKey,
   );
+  expect(
+    await readFile(
+      join(
+        setup.aeRoot,
+        "Scripts/ScriptUI Panels/RVSBridge/releases",
+        (await activeSignedPanelRelease(setup.aeRoot)) ?? "",
+        "RVSBridgePanel.jsx",
+      ),
+      "utf8",
+    ),
+  ).toBe("panel v2");
 });
 
-test("enumerates fixed supported roots for macOS, Linux, and Windows", () => {
+test("enumerates canonical roots and rejects a malformed Windows root", async () => {
   // Given / When
   const mac = supportedAfterEffectsRoots(
     "darwin",
@@ -183,5 +222,15 @@ test("enumerates fixed supported roots for macOS, Linux, and Windows", () => {
   expect(linux).toContain(
     "/home/rvs/.wine/drive_c/Program Files/Adobe/Adobe After Effects 2026",
   );
-  expect(windows).toContain("D:\\Adobe/Adobe/Adobe After Effects 2026");
+  expect(windows).toContain("D:\\Adobe\\Adobe\\Adobe After Effects 2026");
+  expect(windows.every((value) => !value.includes("/"))).toBe(true);
+  const setup = await fixture();
+  await expect(
+    installSignedPanel(
+      setup.source,
+      "D:\\Adobe/Adobe After Effects 2026",
+      setup.signManifest(),
+      setup.publicKey,
+    ),
+  ).rejects.toThrow("non-canonical Windows");
 });

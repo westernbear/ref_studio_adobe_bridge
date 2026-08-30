@@ -3,7 +3,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import golden from "../contract/adobe-mcp-v1.json" with { type: "json" };
-import { AdobeCommandEnvelopeSchema } from "../src/contracts.js";
+import {
+  AdobeCommandEnvelopeSchema,
+  AdobeCommandResultSchema,
+} from "../src/contracts.js";
 import { CommandSpool } from "../src/spool.js";
 import {
   dispatchJsonRpc,
@@ -159,17 +162,21 @@ test("stdio and cloud relay preserve all 25 golden command and result vectors", 
     expect(relayStatus).toBe(directStatus);
     const parsedDirect = AdobeCommandEnvelopeSchema.parse(directEnvelope);
     const parsedRelay = AdobeCommandEnvelopeSchema.parse(relayEnvelope);
-    const directPayload = dispatchFixture(parsedDirect);
-    const relayPayload = dispatchFixture(parsedRelay);
-    expect(relayPayload).toEqual(directPayload);
-    expect(directPayload).toEqual(vector.payload);
+    const directDispatch = AdobeCommandResultSchema.parse(
+      dispatchFixture(parsedDirect),
+    );
+    const relayDispatch = AdobeCommandResultSchema.parse(
+      dispatchFixture(parsedRelay),
+    );
+    expect(relayDispatch).toEqual(directDispatch);
+    expect(directDispatch.payload).toMatchObject(vector.payload);
     const directResult = {
       ...golden.resultBase,
       commandId,
       changedFields: vector.changedFields,
-      payload: directPayload,
+      payload: directDispatch.payload,
     };
-    const relayResult = { ...directResult, payload: relayPayload };
+    const relayResult = { ...directResult, payload: relayDispatch.payload };
     expect(await relaySpool.complete(relayResult)).toEqual(
       await directSpool.complete(directResult),
     );

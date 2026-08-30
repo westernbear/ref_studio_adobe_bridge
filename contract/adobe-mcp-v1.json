@@ -208,7 +208,11 @@
       "tool": "adobe.command.cancel_v1",
       "args": { "targetCommandId": "cmd-target-01" },
       "changedFields": ["commands.cmd-target-01.status"],
-      "payload": { "commandId": "cmd-target-01", "cancelled": false }
+      "payload": {
+        "commandId": "cmd-target-01",
+        "cancelled": true,
+        "status": "CANCELLED"
+      }
     },
     {
       "tool": "adobe.verify_v1",
@@ -231,7 +235,7 @@
     {
       "tool": "adobe.rollback_v1",
       "args": {
-        "expectedSceneDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        "expectedSceneDigest": "7d2bfd78905d130e04546fd8d3aec9b2e9b77145626767778b766bffce167920"
       },
       "changedFields": ["project"],
       "payload": { "rolledBack": true }

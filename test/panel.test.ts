@@ -74,7 +74,20 @@ const loadFixture = (): Fixture => {
       beginUndoGroup: () => {},
       endUndoGroup: () => {},
     },
-    RVSDispatch: () => ({ ok: true }),
+    RVSDispatch: () => ({
+      version: 1,
+      commandId: "cmd-panel-01",
+      nonce: "nonce-panel-01",
+      sceneDigest: "a".repeat(64),
+      deviceId: "device-panel",
+      jobId: "job-panel",
+      status: "SUCCEEDED",
+      beforeDigest: "b".repeat(64),
+      afterDigest: "b".repeat(64),
+      changedFields: [],
+      warnings: [],
+      payload: { ok: true },
+    }),
     Date,
     JSON,
     Error,
@@ -152,6 +165,28 @@ test("panel executes queued readonly command and writes SUCCEEDED result", () =>
   expect(values.get("results/cmd-panel-01.json")?.["status"]).toBe("SUCCEEDED");
   expect(states).toContain("cmd-panel-01 QUEUED");
   expect(states).toContain("cmd-panel-01 RUNNING");
+});
+
+test("panel persists dispatcher readback digests and changed fields unchanged", () => {
+  const fixture = loadFixture();
+  const { values, io, binding } = setup();
+  const result = {
+    version: 1,
+    commandId: "cmd-panel-01",
+    nonce: "nonce-panel-01",
+    sceneDigest: "a".repeat(64),
+    deviceId: "device-panel",
+    jobId: "job-panel",
+    status: "SUCCEEDED",
+    beforeDigest: "b".repeat(64),
+    afterDigest: "c".repeat(64),
+    changedFields: ["layers.layer:1.properties.ADBE Opacity"],
+    warnings: [],
+    payload: { readback: { opacity: 80 } },
+  };
+  fixture.setDispatch(() => result);
+  fixture.createController(io, binding, () => {}).runNext(false);
+  expect(values.get("results/cmd-panel-01.json")).toEqual(result);
 });
 
 test("panel retains CANCELLED when shutdown races a returning dispatch", () => {

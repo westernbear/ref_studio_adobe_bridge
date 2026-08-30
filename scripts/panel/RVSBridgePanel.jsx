@@ -18,7 +18,7 @@
     var active = null;
     function emit(message) { if (onState) onState(message); }
     function release(commandId) { var lock = io.read("mutation.lock.json"); if (lock && lock.commandId === commandId) io.remove("mutation.lock.json"); }
-    function complete(command, status, warning, payload) { io.write("results/" + command.commandId + ".json", resultFor(command, status, warning, payload)); io.remove("commands/" + command.commandId + ".running.json"); release(command.commandId); active = null; emit(command.commandId + " " + status); }
+    function complete(command, status, warning, payload, result) { io.write("results/" + command.commandId + ".json", result || resultFor(command, status, warning, payload)); io.remove("commands/" + command.commandId + ".running.json"); release(command.commandId); active = null; emit(command.commandId + " " + status); }
     function next(confirmed) {
       if (active) return false;
       if (!isWorkingCopy(io.workingCopyPath())) { emit("Refused: open a job .rvs-working-copy.aep"); return false; }
@@ -34,7 +34,7 @@
       if (io.read("mutation.lock.json")) { emit("Waiting: mutation lock"); return false; }
       if (!io.rename(source, "commands/" + command.commandId + ".running.json")) return false;
       io.write("mutation.lock.json", { commandId: command.commandId, acquiredAtMs: io.now(), leaseExpiresAtMs: io.now() + 30000 }); active = command; emit(command.commandId + " RUNNING");
-      try { app.beginUndoGroup("RVS " + command.commandId); var payload = RVSDispatch(command); app.endUndoGroup(); if (active && active.commandId === command.commandId) complete(command, "SUCCEEDED", "", payload); } catch (error) { try { app.endUndoGroup(); } catch (ignored) {} if (active && active.commandId === command.commandId) complete(command, "FAILED", error, {}); }
+      try { app.beginUndoGroup("RVS " + command.commandId); var result = RVSDispatch(command); app.endUndoGroup(); if (active && active.commandId === command.commandId) complete(command, result.status, "", result.payload, result); } catch (error) { try { app.endUndoGroup(); } catch (ignored) {} if (active && active.commandId === command.commandId) complete(command, "FAILED", error, {}); }
       return true;
     }
     return { runNext: next, shutdown: function () { if (active) complete(active, "CANCELLED", "panel shutdown", {}); emit("CANCELLED"); }, active: function () { return active; } };

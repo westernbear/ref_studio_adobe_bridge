@@ -162,6 +162,8 @@ export class CommandSpool {
         expiresAtMs: Date.now() + TRANSITION_LEASE_MS,
       }))
     ) {
+      if (Date.now() >= deadline)
+        throw new SpoolStateError(commandId, "transition lock timeout");
       let existing: z.infer<typeof TransitionSchema>;
       try {
         existing = TransitionSchema.parse(
@@ -179,7 +181,12 @@ export class CommandSpool {
       }
       if (Date.now() > existing.expiresAtMs) {
         const recovery = `${this.#transition}.${existing.token}.recovery`;
-        if (await this.#createExclusive(recovery, existing)) {
+        if (
+          await this.#createExclusive(recovery, {
+            token: existing.token,
+            expiresAtMs: Date.now() + TRANSITION_LEASE_MS,
+          })
+        ) {
           try {
             const current = TransitionSchema.parse(
               await this.#readBounded(
@@ -198,11 +205,35 @@ export class CommandSpool {
           } finally {
             await rm(recovery, { force: true });
           }
+        } else {
+          let marker: z.infer<typeof TransitionSchema>;
+          try {
+            marker = TransitionSchema.parse(
+              await this.#readBounded(
+                recovery,
+                commandId,
+                "transition recovery",
+              ),
+            );
+          } catch (error) {
+            if (isFsError(error, "ENOENT")) continue;
+            if (error instanceof z.ZodError)
+              throw new SpoolStateError(
+                commandId,
+                "malformed transition recovery",
+              );
+            throw error;
+          }
+          if (marker.token !== existing.token)
+            throw new SpoolStateError(
+              commandId,
+              "transition recovery binding mismatch",
+            );
+          if (Date.now() > marker.expiresAtMs)
+            await rm(recovery, { force: true });
         }
         continue;
       }
-      if (Date.now() >= deadline)
-        throw new SpoolStateError(commandId, "transition lock timeout");
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
     try {

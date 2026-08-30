@@ -29,7 +29,7 @@ test("working copy preserves original and rolls back to the last safe snapshot",
   const result = await project.rollback("a".repeat(64));
   expect(await readFile(project.path, "utf8")).toBe("ORIGINAL");
   expect(result.beforeDigest).not.toBe(result.afterDigest);
-  expect(result.afterDigest).toBe("a".repeat(64));
+  expect(result.afterDigest).toBe(await sha256(project.path));
   expect(await readFile(original, "utf8")).toBe("ORIGINAL");
   expect((await stat(original)).mode & 0o777).toBe(originalMode);
   await project.assertOriginalUnchanged();

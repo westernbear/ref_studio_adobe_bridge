@@ -1,9 +1,16 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { AdobeCommandEnvelopeSchema } from "./contracts.js";
+import { finalizePanelResult } from "./execution.js";
 import { runStdioServer } from "./server.js";
 import { CommandSpool } from "./spool.js";
+import {
+  AdobeWorkingCopy,
+  LocalProgramRenderAdapter,
+  LocalProgramUploadAdapter,
+} from "./working-copy.js";
 
 const option = (name: string): string | undefined => {
   const index = process.argv.indexOf(name);
@@ -28,6 +35,27 @@ const main = async (): Promise<void> => {
     return;
   }
   const spool = new CommandSpool(spoolRoot);
+  if (mode === "prepare") {
+    const original = option("--original-aep");
+    const jobId = option("--job-id");
+    const sceneDigest = option("--scene-digest");
+    if (
+      original === undefined ||
+      jobId === undefined ||
+      sceneDigest === undefined
+    )
+      throw new TypeError(
+        "--original-aep, --job-id and --scene-digest are required",
+      );
+    const project = await AdobeWorkingCopy.open(
+      option("--workspace") ?? join(spoolRoot, "working-copies"),
+      jobId,
+      original,
+    );
+    await project.snapshot(sceneDigest);
+    process.stdout.write(`${JSON.stringify({ projectPath: project.path })}\n`);
+    return;
+  }
   if (mode === "enqueue") {
     const input = AdobeCommandEnvelopeSchema.parse(
       JSON.parse(await Bun.stdin.text()),
@@ -57,6 +85,52 @@ const main = async (): Promise<void> => {
       payload: { fixture: true },
     });
     process.stdout.write(`${JSON.stringify(result)}\n`);
+    return;
+  }
+  if (mode === "finalize") {
+    const original = option("--original-aep");
+    const panelResultPath = option("--panel-result");
+    if (original === undefined || panelResultPath === undefined)
+      throw new TypeError("--original-aep and --panel-result are required");
+    const command = await spool.claimNext();
+    if (command === undefined) return;
+    const project = await AdobeWorkingCopy.open(
+      option("--workspace") ?? join(spoolRoot, "working-copies"),
+      command.jobId,
+      original,
+    );
+    const renderProgram = process.env["RVS_ADOBE_RENDER_PROGRAM"];
+    const uploadProgram = process.env["RVS_ADOBE_UPLOAD_PROGRAM"];
+    const connectorAuthorization = process.env["RVS_ADOBE_UPLOAD_AUTH"];
+    if (
+      command.tool === "adobe.render_upload_v1" &&
+      (renderProgram === undefined ||
+        uploadProgram === undefined ||
+        connectorAuthorization === undefined)
+    )
+      throw new TypeError("local render/upload configuration is required");
+    const unavailable = async (): Promise<never> => {
+      throw new TypeError("local adapter unavailable for this command");
+    };
+    const { status: _status, ...envelope } = command;
+    const result = await finalizePanelResult(
+      AdobeCommandEnvelopeSchema.parse(envelope),
+      JSON.parse(await readFile(panelResultPath, "utf8")),
+      {
+        project,
+        renderer:
+          renderProgram === undefined
+            ? { render: unavailable }
+            : new LocalProgramRenderAdapter(renderProgram),
+        uploader:
+          uploadProgram === undefined
+            ? { upload: unavailable }
+            : new LocalProgramUploadAdapter(uploadProgram),
+        connectorAuthorization:
+          connectorAuthorization ?? "local-connector-only",
+      },
+    );
+    process.stdout.write(`${JSON.stringify(await spool.complete(result))}\n`);
     return;
   }
   throw new TypeError(`unknown mode: ${mode}`);

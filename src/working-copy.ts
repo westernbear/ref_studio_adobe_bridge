@@ -66,6 +66,36 @@ export type LocalUploadAdapter = {
   ) => Promise<{ readonly uploadId: string }>;
 };
 
+export class LocalProgramRenderAdapter implements LocalRenderAdapter {
+  public constructor(private readonly executable: string) {}
+
+  public async render(request: RenderRequest): Promise<void> {
+    await execFileAsync(
+      this.executable,
+      [request.workingCopyPath, request.compHandle, request.outputPath],
+      { maxBuffer: 1_048_576, signal: request.signal },
+    );
+  }
+}
+
+export class LocalProgramUploadAdapter implements LocalUploadAdapter {
+  public constructor(private readonly executable: string) {}
+
+  public async upload(
+    localPath: string,
+    authorization: string,
+  ): Promise<{ readonly uploadId: string }> {
+    const { stdout } = await execFileAsync(this.executable, [localPath], {
+      maxBuffer: 1_048_576,
+      env: { ...process.env, RVS_CONNECTOR_AUTHORIZATION: authorization },
+    });
+    return z
+      .object({ uploadId: IdentifierSchema })
+      .strict()
+      .parse(JSON.parse(stdout));
+  }
+}
+
 type OriginalBinding = {
   readonly originalPath: string;
   readonly originalSha256: string;
@@ -176,7 +206,7 @@ export class AdobeWorkingCopy {
     await copyFile(join(this.#jobRoot, `safe-${sceneDigest}.aep`), this.path);
     await chmod(this.path, 0o600);
     await this.assertOriginalUnchanged();
-    return { beforeDigest, afterDigest: sceneDigest };
+    return { beforeDigest, afterDigest: await sha256(this.path) };
   }
 
   public async renderUpload(

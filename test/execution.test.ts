@@ -63,3 +63,39 @@ test("finalizes the P4.5 render plan with local render and connector upload", as
   expect(result.mp4).toMatchObject({ codec: "h264", frameCount: 30 });
   expect(JSON.stringify(result)).not.toContain("local-connector-secret");
 });
+
+test("cancelled panel result verifies the filesystem-bound original", async () => {
+  const root = await Bun.$`mktemp -d`.text().then((value) => value.trim());
+  const original = join(root, "source.aep");
+  await writeFile(original, "ORIGINAL");
+  const project = await AdobeWorkingCopy.open(root, base.jobId, original);
+  const result = await finalizePanelResult(
+    {
+      ...base,
+      tool: "adobe.rollback_v1",
+      args: { expectedSceneDigest: base.sceneDigest },
+    },
+    {
+      version: 1,
+      commandId: base.commandId,
+      nonce: base.nonce,
+      sceneDigest: base.sceneDigest,
+      deviceId: base.deviceId,
+      jobId: base.jobId,
+      status: "CANCELLED",
+      beforeDigest: base.sceneDigest,
+      afterDigest: base.sceneDigest,
+      changedFields: [],
+      warnings: [],
+      payload: {},
+    },
+    {
+      project,
+      renderer: { render: async () => undefined },
+      uploader: { upload: async () => ({ uploadId: "upl-never" }) },
+      connectorAuthorization: "local-connector-secret",
+    },
+  );
+  expect(result.status).toBe("CANCELLED");
+  expect(await Bun.file(original).text()).toBe("ORIGINAL");
+});

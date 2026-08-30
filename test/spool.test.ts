@@ -124,4 +124,33 @@ describe("atomic command spool", () => {
       "binding",
     );
   });
+
+  test("rejects terminal results from another device or job", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rvs-spool-"));
+    const spool = new CommandSpool(root);
+    await spool.enqueue(command);
+    await spool.claimNext();
+    const result = {
+      version: 1,
+      commandId: command.commandId,
+      nonce: command.nonce,
+      sceneDigest: command.sceneDigest,
+      deviceId: "device-other",
+      jobId: command.jobId,
+      status: "SUCCEEDED",
+      beforeDigest: command.sceneDigest,
+      afterDigest: command.sceneDigest,
+      changedFields: [],
+      warnings: [],
+      payload: {},
+    };
+    expect(spool.complete(result)).rejects.toThrow("binding");
+    expect(
+      spool.complete({
+        ...result,
+        deviceId: command.deviceId,
+        jobId: "job-other",
+      }),
+    ).rejects.toThrow("binding");
+  });
 });

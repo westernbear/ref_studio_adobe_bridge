@@ -41,7 +41,7 @@ const HandleSchema = (prefix: string) =>
     .string()
     .min(3)
     .max(128)
-    .regex(new RegExp(`^${prefix}:[A-Za-z0-9._-]+$`, "u"));
+    .regex(new RegExp(`^${prefix}:[1-9][0-9]*$`, "u"));
 const CompHandleSchema = HandleSchema("comp");
 const LayerHandleSchema = HandleSchema("layer");
 const FiniteSchema = z.number().finite();

@@ -185,6 +185,9 @@ describe("atomic command spool", () => {
     expect(
       spool.enqueue({ ...command, tool: "adobe.composition.list_v1" }),
     ).rejects.toThrow("binding");
+    expect(
+      spool.result({ ...command, tool: "adobe.composition.list_v1" }),
+    ).rejects.toThrow("binding");
   });
 
   test("rejects changed arguments after a terminal result", async () => {
@@ -221,6 +224,12 @@ describe("atomic command spool", () => {
 
     expect(
       spool.enqueue({
+        ...createCommand,
+        args: { ...createCommand.args, width: 1280 },
+      }),
+    ).rejects.toThrow("binding");
+    expect(
+      spool.result({
         ...createCommand,
         args: { ...createCommand.args, width: 1280 },
       }),

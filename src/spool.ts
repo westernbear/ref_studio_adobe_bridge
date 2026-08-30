@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  link,
   mkdir,
   readdir,
   readFile,
@@ -72,13 +73,14 @@ export class CommandSpool {
       throw new BindingError(command.commandId);
   }
 
-  public async enqueue(
-    input: unknown,
-  ): Promise<QueuedCommand | RunningCommand | AdobeCommandResult> {
-    const command = AdobeCommandEnvelopeSchema.parse(input);
-    await this.#init();
-    const bindingPath = join(this.#bindings, `${command.commandId}.json`);
-    const binding = {
+  #commandBinding(command: AdobeCommandEnvelope): {
+    readonly nonce: string;
+    readonly sceneDigest: string;
+    readonly deviceId: string;
+    readonly jobId: string;
+    readonly commandDigest: string;
+  } {
+    return {
       nonce: command.nonce,
       sceneDigest: command.sceneDigest,
       deviceId: command.deviceId,
@@ -87,6 +89,15 @@ export class CommandSpool {
         .update(JSON.stringify(command))
         .digest("hex"),
     };
+  }
+
+  public async enqueue(
+    input: unknown,
+  ): Promise<QueuedCommand | RunningCommand | AdobeCommandResult> {
+    const command = AdobeCommandEnvelopeSchema.parse(input);
+    await this.#init();
+    const bindingPath = join(this.#bindings, `${command.commandId}.json`);
+    const binding = this.#commandBinding(command);
     try {
       await writeFile(bindingPath, `${JSON.stringify(binding)}\n`, {
         flag: "wx",
@@ -147,11 +158,14 @@ export class CommandSpool {
       this.#commands,
       `${command.commandId}.pending.json`,
     );
+    const temporary = `${pendingPath}.${crypto.randomUUID()}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(queued)}\n`, {
+      flag: "wx",
+      mode: 0o600,
+    });
+    let collided = false;
     try {
-      await writeFile(pendingPath, `${JSON.stringify(queued)}\n`, {
-        flag: "wx",
-        mode: 0o600,
-      });
+      await link(temporary, pendingPath);
     } catch (error) {
       if (
         !(error instanceof Error) ||
@@ -159,6 +173,11 @@ export class CommandSpool {
         error.code !== "EEXIST"
       )
         throw error;
+      collided = true;
+    } finally {
+      await rm(temporary, { force: true });
+    }
+    if (collided) {
       const existing = await this.#storedCommand(pendingPath);
       if (existing === undefined)
         throw new SpoolStateError(command.commandId, "pending disappeared");
@@ -216,6 +235,13 @@ export class CommandSpool {
   public async result(
     command: AdobeCommandEnvelope,
   ): Promise<AdobeCommandResult> {
+    const binding = parseJson(
+      await readFile(join(this.#bindings, `${command.commandId}.json`), "utf8"),
+    );
+    if (
+      JSON.stringify(binding) !== JSON.stringify(this.#commandBinding(command))
+    )
+      throw new BindingError(command.commandId);
     const result = AdobeCommandResultSchema.parse(
       parseJson(
         await readFile(

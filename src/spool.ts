@@ -19,6 +19,7 @@ const MAX_FILE_BYTES = 1_048_576;
 const DEFAULT_LEASE_MS = 30_000;
 const TRANSITION_LEASE_MS = 30_000;
 const TRANSITION_WAIT_MS = 5_000;
+const RECOVERY_LEASE_MS = 250;
 const TimestampSchema = z.number().int().nonnegative();
 const LifecycleSchema = StoredCommandSchema.and(
   z
@@ -67,6 +68,7 @@ const isFsError = (error: unknown, code: string): boolean =>
   error instanceof Error && "code" in error && error.code === code;
 
 export class CommandSpool {
+  readonly #root: string;
   readonly #commands: string;
   readonly #results: string;
   readonly #bindings: string;
@@ -76,6 +78,7 @@ export class CommandSpool {
   readonly #now: () => number;
 
   public constructor(root: string, options: SpoolOptions = {}) {
+    this.#root = root;
     this.#commands = join(root, "commands");
     this.#results = join(root, "results");
     this.#bindings = join(root, "bindings");
@@ -184,7 +187,7 @@ export class CommandSpool {
         if (
           await this.#createExclusive(recovery, {
             token: existing.token,
-            expiresAtMs: Date.now() + TRANSITION_LEASE_MS,
+            expiresAtMs: Date.now() + RECOVERY_LEASE_MS,
           })
         ) {
           try {
@@ -237,6 +240,7 @@ export class CommandSpool {
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
     try {
+      await this.#cleanupOrphanRecoveries();
       return await action();
     } finally {
       let existing: z.infer<typeof TransitionSchema> | undefined;
@@ -254,6 +258,16 @@ export class CommandSpool {
       if (existing?.token === token)
         await rm(this.#transition, { force: true });
     }
+  }
+
+  async #cleanupOrphanRecoveries(): Promise<void> {
+    const names = (await readdir(this.#root)).filter(
+      (name) =>
+        name.startsWith("transition.lock.json.") && name.endsWith(".recovery"),
+    );
+    await Promise.all(
+      names.map((name) => rm(join(this.#root, name), { force: true })),
+    );
   }
 
   async #releaseMutationLock(commandId: string): Promise<void> {

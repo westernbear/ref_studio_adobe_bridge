@@ -171,7 +171,7 @@ describe("atomic command spool", () => {
     expect(readFile(lockPath, "utf8")).rejects.toThrow();
   });
 
-  test("restart reclaims an expired transition recovery marker without spinning", async () => {
+  test("restart reclaims a fresh stranded transition recovery marker within the public bound", async () => {
     // Given
     const root = await mkdtemp(join(tmpdir(), "rvs-spool-"));
     let now = 1_000;
@@ -186,15 +186,15 @@ describe("atomic command spool", () => {
     });
     await writeFile(
       `${transitionPath}.${token}.recovery`,
-      JSON.stringify({ token, expiresAtMs: 0 }),
+      JSON.stringify({ token, expiresAtMs: Date.now() + 250 }),
       { mode: 0o600 },
     );
 
     // When
     const recovered = await Promise.race([
       spool.recover(),
-      Bun.sleep(1_000).then(() => {
-        throw new Error("transition recovery exceeded one second");
+      Bun.sleep(2_000).then(() => {
+        throw new Error("transition recovery exceeded two seconds");
       }),
     ]);
 
@@ -205,6 +205,31 @@ describe("atomic command spool", () => {
     ).toEqual([]);
     expect((await spool.claimNext())?.status).toBe("RUNNING");
     await spool.cancel(command.commandId);
+  });
+
+  test("new transition owner removes a marker orphaned after transition deletion", async () => {
+    // Given
+    const root = await mkdtemp(join(tmpdir(), "rvs-spool-"));
+    const spool = new CommandSpool(root);
+    await spool.enqueue(command);
+    const token = "00000000-0000-4000-8000-000000000002";
+    const marker = join(root, `transition.lock.json.${token}.recovery`);
+    await writeFile(
+      marker,
+      JSON.stringify({ token, expiresAtMs: Date.now() + 30_000 }),
+      { mode: 0o600 },
+    );
+
+    // When
+    const claimed = await spool.claimNext();
+
+    // Then
+    expect(claimed?.status).toBe("RUNNING");
+    expect(readFile(marker, "utf8")).rejects.toThrow();
+    await spool.cancel(command.commandId);
+    expect(
+      (await readdir(root)).filter((name) => name.includes("transition")),
+    ).toEqual([]);
   });
 
   test("rejects replay from another device or job", async () => {

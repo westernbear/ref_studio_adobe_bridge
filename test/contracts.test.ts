@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import golden from "../contract/adobe-mcp-v1.json" with { type: "json" };
 import {
   AdobeCommandEnvelopeSchema,
   AdobeCommandResultSchema,
@@ -19,20 +20,8 @@ const valid = {
 
 describe("Adobe command boundary", () => {
   test("accepts every exact versioned tool", () => {
-    for (const tool of TOOL_NAMES) {
-      const args =
-        tool === "adobe.effect.apply_v1"
-          ? { effectId: "ADBE Drop Shadow" }
-          : tool === "adobe.effect.apply_template_v1"
-            ? { templateId: "drop-shadow-v1" }
-            : tool === "adobe.expression.apply_template_v1"
-              ? {
-                  templateId: "loop-cycle-v1",
-                  parameters: { property: "ADBE Opacity" },
-                }
-              : tool === "adobe.expression.remove_v1"
-                ? { propertyId: "ADBE Opacity" }
-                : {};
+    expect(golden.tools.map(({ tool }) => tool)).toEqual([...TOOL_NAMES]);
+    for (const { tool, args } of golden.tools) {
       expect(
         AdobeCommandEnvelopeSchema.safeParse({ ...valid, tool, args }).success,
       ).toBe(true);
@@ -40,16 +29,7 @@ describe("Adobe command boundary", () => {
   });
 
   test("rejects unknown fields and forbidden cloud input before mutation", () => {
-    for (const forbidden of [
-      { expressionString: "wiggle(2, 5)" },
-      { presetPath: "/tmp/a.ffx" },
-      { localPath: "/tmp/a.aep" },
-      { uploadUrl: "https://example.test" },
-      { accessToken: "secret" },
-      { tenantId: "tenant" },
-      { userId: "user" },
-      { script: "app.project.close()" },
-    ])
+    for (const forbidden of golden.rejectedArgs)
       expect(
         AdobeCommandEnvelopeSchema.safeParse({ ...valid, args: forbidden })
           .success,
@@ -99,6 +79,8 @@ describe("Adobe command boundary", () => {
       commandId: valid.commandId,
       nonce: valid.nonce,
       sceneDigest: valid.sceneDigest,
+      deviceId: valid.deviceId,
+      jobId: valid.jobId,
       status: "SUCCEEDED",
       beforeDigest: valid.sceneDigest,
       afterDigest: valid.sceneDigest,

@@ -116,7 +116,9 @@ export class CommandSpool {
     );
     if (
       running.nonce !== result.nonce ||
-      running.sceneDigest !== result.sceneDigest
+      running.sceneDigest !== result.sceneDigest ||
+      running.deviceId !== result.deviceId ||
+      running.jobId !== result.jobId
     )
       throw new BindingError(result.commandId);
     await this.#writeAtomic(
@@ -140,7 +142,9 @@ export class CommandSpool {
     );
     if (
       result.nonce !== command.nonce ||
-      result.sceneDigest !== command.sceneDigest
+      result.sceneDigest !== command.sceneDigest ||
+      result.deviceId !== command.deviceId ||
+      result.jobId !== command.jobId
     )
       throw new BindingError(command.commandId);
     return result;
@@ -182,6 +186,8 @@ export class CommandSpool {
       commandId,
       nonce: command.nonce,
       sceneDigest: command.sceneDigest,
+      deviceId: command.deviceId,
+      jobId: command.jobId,
       status: "CANCELLED",
       beforeDigest: command.sceneDigest,
       afterDigest: command.sceneDigest,

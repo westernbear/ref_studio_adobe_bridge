@@ -73,6 +73,8 @@ test("CLI queues and locally completes one MCP command without changing original
     await readFile(join(root, "results", "cmd-e2e-0001.json"), "utf8"),
   );
   expect(result.status).toBe("SUCCEEDED");
+  expect(result.deviceId).toBe("device-e2e");
+  expect(result.jobId).toBe("job-e2e");
   expect(result.beforeDigest).toBe(result.afterDigest);
 });
 

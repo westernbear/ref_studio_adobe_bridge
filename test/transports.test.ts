@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import golden from "../contract/adobe-mcp-v1.json" with { type: "json" };
 import { CommandSpool } from "../src/spool.js";
 import { dispatchJsonRpc, relayRequest } from "../src/transport.js";
 
@@ -72,6 +73,8 @@ test("stdio and authenticated cloud tools call enqueue equivalent contracts", as
     commandId: envelope.commandId,
     nonce: envelope.nonce,
     sceneDigest: envelope.sceneDigest,
+    deviceId: envelope.deviceId,
+    jobId: envelope.jobId,
     status: "SUCCEEDED",
     beforeDigest: envelope.sceneDigest,
     afterDigest: envelope.sceneDigest,
@@ -82,4 +85,53 @@ test("stdio and authenticated cloud tools call enqueue equivalent contracts", as
   const directResult = await new CommandSpool(directRoot).complete(terminal);
   const relayResult = await new CommandSpool(relayRoot).complete(terminal);
   expect(relayResult).toEqual(directResult);
+});
+
+test("stdio and cloud relay preserve all 25 golden command and result vectors", async () => {
+  // Given
+  const directSpool = new CommandSpool(
+    await mkdtemp(join(tmpdir(), "rvs-golden-direct-")),
+  );
+  const relaySpool = new CommandSpool(
+    await mkdtemp(join(tmpdir(), "rvs-golden-relay-")),
+  );
+  const secret = "test-secret";
+
+  for (const [index, vector] of golden.tools.entries()) {
+    const commandId = `cmd-golden-${String(index).padStart(2, "0")}`;
+    const call = {
+      jsonrpc: "2.0" as const,
+      id: index,
+      method: "tools/call",
+      params: {
+        name: vector.tool,
+        arguments: { ...golden.commandBase, commandId, args: vector.args },
+      },
+    };
+
+    // When
+    const directResponse = await dispatchJsonRpc(call, directSpool);
+    const body = JSON.stringify(call);
+    const relayResponse = await relayRequest(
+      body,
+      createHmac("sha256", secret).update(body).digest("hex"),
+      secret,
+      relaySpool,
+    );
+
+    // Then
+    expect(relayResponse).toEqual(directResponse);
+    const directCommand = await directSpool.claimNext();
+    const relayCommand = await relaySpool.claimNext();
+    expect(relayCommand).toEqual(directCommand);
+    const result = {
+      ...golden.resultBase,
+      commandId,
+      changedFields: vector.changedFields,
+      payload: vector.payload,
+    };
+    expect(await relaySpool.complete(result)).toEqual(
+      await directSpool.complete(result),
+    );
+  }
 });

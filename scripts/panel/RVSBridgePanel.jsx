@@ -38,11 +38,13 @@
       var payload = RVSDispatch(command);
       app.endUndoGroup();
       result = { version: 1, commandId: command.commandId, nonce: command.nonce, sceneDigest: command.sceneDigest,
+        deviceId: command.deviceId, jobId: command.jobId,
         status: "SUCCEEDED", beforeDigest: command.sceneDigest, afterDigest: command.sceneDigest,
         changedFields: [], warnings: [], payload: payload };
     } catch (error) {
       try { app.endUndoGroup(); } catch (ignored) {}
       result = { version: 1, commandId: command.commandId, nonce: command.nonce, sceneDigest: command.sceneDigest,
+        deviceId: command.deviceId, jobId: command.jobId,
         status: "FAILED", beforeDigest: command.sceneDigest, afterDigest: command.sceneDigest,
         changedFields: [], warnings: [String(error).slice(0, 500)], payload: {} };
     }

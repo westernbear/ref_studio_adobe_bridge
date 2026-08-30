@@ -47,6 +47,8 @@ const main = async (): Promise<void> => {
       commandId: command.commandId,
       nonce: command.nonce,
       sceneDigest: command.sceneDigest,
+      deviceId: command.deviceId,
+      jobId: command.jobId,
       status: "SUCCEEDED",
       beforeDigest: digest,
       afterDigest: await digestFile(original),

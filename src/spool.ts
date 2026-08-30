@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   mkdir,
   readdir,
@@ -82,8 +83,10 @@ export class CommandSpool {
       sceneDigest: command.sceneDigest,
       deviceId: command.deviceId,
       jobId: command.jobId,
+      commandDigest: createHash("sha256")
+        .update(JSON.stringify(command))
+        .digest("hex"),
     };
-    let ownsAdmission = true;
     try {
       await writeFile(bindingPath, `${JSON.stringify(binding)}\n`, {
         flag: "wx",
@@ -99,7 +102,6 @@ export class CommandSpool {
       const existing = parseJson(await readFile(bindingPath, "utf8"));
       if (JSON.stringify(existing) !== JSON.stringify(binding))
         throw new BindingError(command.commandId);
-      ownsAdmission = false;
     }
     try {
       const terminal = AdobeCommandResultSchema.parse(
@@ -141,11 +143,28 @@ export class CommandSpool {
       return pending;
     }
     const queued = { ...command, status: "QUEUED" as const };
-    if (!ownsAdmission) return queued;
-    await this.#writeAtomic(
-      join(this.#commands, `${command.commandId}.pending.json`),
-      queued,
+    const pendingPath = join(
+      this.#commands,
+      `${command.commandId}.pending.json`,
     );
+    try {
+      await writeFile(pendingPath, `${JSON.stringify(queued)}\n`, {
+        flag: "wx",
+        mode: 0o600,
+      });
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !("code" in error) ||
+        error.code !== "EEXIST"
+      )
+        throw error;
+      const existing = await this.#storedCommand(pendingPath);
+      if (existing === undefined)
+        throw new SpoolStateError(command.commandId, "pending disappeared");
+      this.#assertStoredMatches(existing, command);
+      return existing;
+    }
     return queued;
   }
 

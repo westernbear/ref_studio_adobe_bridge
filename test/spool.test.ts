@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdobeCommandResult } from "../src/contracts.js";
@@ -181,6 +182,49 @@ describe("atomic command spool", () => {
     expect(
       spool.enqueue({ ...command, sceneDigest: "b".repeat(64) }),
     ).rejects.toThrow("binding");
+    expect(
+      spool.enqueue({ ...command, tool: "adobe.composition.list_v1" }),
+    ).rejects.toThrow("binding");
+  });
+
+  test("rejects changed arguments after a terminal result", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rvs-spool-"));
+    const spool = new CommandSpool(root);
+    const createCommand = {
+      ...command,
+      commandId: "cmd-create-replay",
+      tool: "adobe.composition.create_v1" as const,
+      args: {
+        name: "Main",
+        width: 1920,
+        height: 1080,
+        durationSeconds: 15,
+        frameRate: 30,
+      },
+    };
+    await spool.enqueue(createCommand);
+    await spool.claimNext();
+    await spool.complete({
+      version: 1,
+      commandId: createCommand.commandId,
+      nonce: createCommand.nonce,
+      sceneDigest: createCommand.sceneDigest,
+      deviceId: createCommand.deviceId,
+      jobId: createCommand.jobId,
+      status: "SUCCEEDED",
+      beforeDigest: createCommand.sceneDigest,
+      afterDigest: createCommand.sceneDigest,
+      changedFields: [],
+      warnings: [],
+      payload: {},
+    });
+
+    expect(
+      spool.enqueue({
+        ...createCommand,
+        args: { ...createCommand.args, width: 1280 },
+      }),
+    ).rejects.toThrow("binding");
   });
 
   test("returns the running command without creating duplicate pending work", async () => {
@@ -216,5 +260,29 @@ describe("atomic command spool", () => {
     ]);
     expect((await spool.claimNext())?.status).toBe("RUNNING");
     expect(await spool.claimNext()).toBeUndefined();
+  });
+
+  test("reconciles an orphan binding into a real pending command", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rvs-spool-"));
+    await mkdir(join(root, "bindings"), { recursive: true });
+    await writeFile(
+      join(root, "bindings", `${command.commandId}.json`),
+      JSON.stringify({
+        nonce: command.nonce,
+        sceneDigest: command.sceneDigest,
+        deviceId: command.deviceId,
+        jobId: command.jobId,
+        commandDigest: createHash("sha256")
+          .update(JSON.stringify(command))
+          .digest("hex"),
+      }),
+    );
+    const spool = new CommandSpool(root);
+
+    expect((await spool.enqueue(command)).status).toBe("QUEUED");
+    expect(await readdir(join(root, "commands"))).toEqual([
+      `${command.commandId}.pending.json`,
+    ]);
+    expect((await spool.claimNext())?.status).toBe("RUNNING");
   });
 });

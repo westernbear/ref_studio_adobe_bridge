@@ -70,10 +70,16 @@ export class LocalProgramRenderAdapter implements LocalRenderAdapter {
   public constructor(private readonly executable: string) {}
 
   public async render(request: RenderRequest): Promise<void> {
+    const renderEnvironment = { ...process.env };
+    delete renderEnvironment["RVS_ADOBE_UPLOAD_AUTH"];
     await execFileAsync(
       this.executable,
       [request.workingCopyPath, request.compHandle, request.outputPath],
-      { maxBuffer: 1_048_576, signal: request.signal },
+      {
+        maxBuffer: 1_048_576,
+        signal: request.signal,
+        env: renderEnvironment,
+      },
     );
   }
 }

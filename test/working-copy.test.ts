@@ -4,6 +4,7 @@ import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   AdobeWorkingCopy,
+  LocalProgramRenderAdapter,
   type LocalRenderAdapter,
   type LocalUploadAdapter,
 } from "../src/working-copy.js";
@@ -33,6 +34,25 @@ test("working copy preserves original and rolls back to the last safe snapshot",
   expect(await readFile(original, "utf8")).toBe("ORIGINAL");
   expect((await stat(original)).mode & 0o777).toBe(originalMode);
   await project.assertOriginalUnchanged();
+});
+
+test("local render program cannot read the connector upload credential", async () => {
+  const root = await Bun.$`mktemp -d`.text().then((value) => value.trim());
+  const program = join(root, "renderer.sh");
+  await writeFile(program, '#!/bin/sh\ntest -z "$RVS_ADOBE_UPLOAD_AUTH"\n', {
+    mode: 0o700,
+  });
+  process.env["RVS_ADOBE_UPLOAD_AUTH"] = "must-not-reach-renderer";
+  try {
+    await new LocalProgramRenderAdapter(program).render({
+      workingCopyPath: join(root, "project.aep"),
+      compHandle: "comp:1",
+      outputPath: join(root, "output.mp4"),
+      signal: new AbortController().signal,
+    });
+  } finally {
+    delete process.env["RVS_ADOBE_UPLOAD_AUTH"];
+  }
 });
 
 test("render validates real MP4 metadata and uploads with connector-owned authentication", async () => {

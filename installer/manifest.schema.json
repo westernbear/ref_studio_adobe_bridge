@@ -2,14 +2,40 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "files", "signature"],
+  "required": ["version", "afterEffectsVersions", "files", "signature"],
   "properties": {
     "version": { "const": 1 },
+    "afterEffectsVersions": {
+      "type": "array",
+      "items": { "enum": ["2024", "2025", "2026"] },
+      "minItems": 1,
+      "maxItems": 3,
+      "uniqueItems": true
+    },
     "files": {
-      "const": [
-        "scripts/panel/RVSBridgePanel.jsx",
-        "scripts/extendscript/rvs-dispatcher.jsx"
-      ]
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": { "const": "scripts/panel/RVSBridgePanel.jsx" },
+            "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256"],
+          "properties": {
+            "path": { "const": "scripts/extendscript/rvs-dispatcher.jsx" },
+            "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          }
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 2
     },
     "signature": { "type": "string", "contentEncoding": "base64" }
   }

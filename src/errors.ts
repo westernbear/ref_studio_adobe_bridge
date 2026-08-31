@@ -16,8 +16,8 @@ export class SpoolStateError extends Error {
 }
 
 export class AuthenticationError extends Error {
-  public constructor() {
-    super("cloud relay authentication failed");
+  public constructor(public readonly reason = "invalid") {
+    super(`cloud relay authentication failed: ${reason}`);
     this.name = "AuthenticationError";
   }
 }

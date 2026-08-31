@@ -2,6 +2,8 @@
 
 Private local connector for typed motion-scene operations against an After Effects working copy.
 
+Motion developer docs: [`docs/MOTION.md`](../../docs/MOTION.md). Error index: [`docs/errors.md`](../../docs/errors.md).
+
 ## Run
 
 ```sh

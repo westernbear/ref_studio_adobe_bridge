@@ -1,0 +1,258 @@
+{
+  "schema": "adobe-mcp-golden-v1",
+  "upstreamReference": "Dakkshin/after-effects-mcp@88d5fbf08b7ae9f015ee98e5f8c4904095cf8202",
+  "commandBase": {
+    "version": 1,
+    "nonce": "nonce-golden-01",
+    "sceneDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "deviceId": "device-golden",
+    "jobId": "job-golden",
+    "projectHandle": "project:working-copy"
+  },
+  "resultBase": {
+    "version": 1,
+    "nonce": "nonce-golden-01",
+    "sceneDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "deviceId": "device-golden",
+    "jobId": "job-golden",
+    "status": "SUCCEEDED",
+    "beforeDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "afterDigest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "warnings": []
+  },
+  "tools": [
+    {
+      "tool": "adobe.project.get_v1",
+      "args": {},
+      "changedFields": [],
+      "payload": { "name": "working-copy.aep", "itemCount": 1 }
+    },
+    {
+      "tool": "adobe.composition.list_v1",
+      "args": {},
+      "changedFields": [],
+      "payload": {
+        "compositions": [{ "compHandle": "comp:1", "name": "Main" }]
+      }
+    },
+    {
+      "tool": "adobe.composition.create_v1",
+      "args": {
+        "name": "Main",
+        "width": 1920,
+        "height": 1080,
+        "durationSeconds": 15,
+        "frameRate": 30
+      },
+      "changedFields": ["compositions"],
+      "payload": { "compHandle": "comp:2" }
+    },
+    {
+      "tool": "adobe.composition.update_v1",
+      "args": { "compHandle": "comp:1", "width": 1280 },
+      "changedFields": ["compositions.comp:1.width"],
+      "payload": { "compHandle": "comp:1" }
+    },
+    {
+      "tool": "adobe.layer.get_v1",
+      "args": { "compHandle": "comp:1", "layerHandle": "layer:1" },
+      "changedFields": [],
+      "payload": { "layerHandle": "layer:1", "name": "Title" }
+    },
+    {
+      "tool": "adobe.layer.create_text_v1",
+      "args": { "compHandle": "comp:1", "text": "Hello" },
+      "changedFields": ["layers"],
+      "payload": { "layerHandle": "layer:2", "name": "Text" }
+    },
+    {
+      "tool": "adobe.layer.create_shape_v1",
+      "args": {
+        "compHandle": "comp:1",
+        "shape": "rectangle",
+        "color": [1, 0, 0]
+      },
+      "changedFields": ["layers"],
+      "payload": { "layerHandle": "layer:2", "name": "Shape" }
+    },
+    {
+      "tool": "adobe.layer.create_solid_v1",
+      "args": { "compHandle": "comp:1", "color": [0, 0, 0] },
+      "changedFields": ["layers"],
+      "payload": { "layerHandle": "layer:2", "name": "Solid" }
+    },
+    {
+      "tool": "adobe.layer.create_camera_v1",
+      "args": { "compHandle": "comp:1" },
+      "changedFields": ["layers"],
+      "payload": { "layerHandle": "layer:2", "name": "Camera" }
+    },
+    {
+      "tool": "adobe.layer.create_null_v1",
+      "args": { "compHandle": "comp:1" },
+      "changedFields": ["layers"],
+      "payload": { "layerHandle": "layer:2", "name": "Null" }
+    },
+    {
+      "tool": "adobe.layer.duplicate_v1",
+      "args": { "compHandle": "comp:1", "layerHandle": "layer:1" },
+      "changedFields": ["layers"],
+      "payload": { "layerHandle": "layer:2", "name": "Title copy" }
+    },
+    {
+      "tool": "adobe.layer.delete_v1",
+      "args": { "compHandle": "comp:1", "layerHandle": "layer:1" },
+      "changedFields": ["layers"],
+      "payload": {}
+    },
+    {
+      "tool": "adobe.layer.set_properties_v1",
+      "args": {
+        "compHandle": "comp:1",
+        "layerHandle": "layer:1",
+        "properties": { "ADBE Opacity": 80 }
+      },
+      "changedFields": ["layers.layer:1.properties.ADBE Opacity"],
+      "payload": {}
+    },
+    {
+      "tool": "adobe.layer.batch_set_properties_v1",
+      "args": {
+        "compHandle": "comp:1",
+        "layers": [
+          {
+            "layerHandle": "layer:1",
+            "properties": { "ADBE Position": [100, 200] }
+          }
+        ]
+      },
+      "changedFields": ["layers.layer:1.properties.ADBE Position"],
+      "payload": { "count": 1 }
+    },
+    {
+      "tool": "adobe.animation.set_keyframes_v1",
+      "args": {
+        "compHandle": "comp:1",
+        "layerHandle": "layer:1",
+        "keyframes": [
+          {
+            "property": "ADBE Opacity",
+            "frame": 12,
+            "value": 100,
+            "easing": "easeOut"
+          }
+        ]
+      },
+      "changedFields": ["layers.layer:1.keyframes"],
+      "payload": { "count": 1 }
+    },
+    {
+      "tool": "adobe.mask.set_v1",
+      "args": {
+        "compHandle": "comp:1",
+        "layerHandle": "layer:1",
+        "mode": "add",
+        "vertices": [[0, 0], [100, 0], [100, 100]]
+      },
+      "changedFields": ["layers.layer:1.mask"],
+      "payload": {}
+    },
+    {
+      "tool": "adobe.effect.apply_v1",
+      "args": {
+        "compHandle": "comp:1",
+        "layerHandle": "layer:1",
+        "effectId": "ADBE Drop Shadow"
+      },
+      "changedFields": ["layers.layer:1.effects"],
+      "payload": { "effectName": "Drop Shadow" }
+    },
+    {
+      "tool": "adobe.effect.apply_template_v1",
+      "args": {
+        "compHandle": "comp:1",
+        "layerHandle": "layer:1",
+        "templateId": "drop-shadow-v1"
+      },
+      "changedFields": ["layers.layer:1.effects"],
+      "payload": { "templateId": "drop-shadow-v1" }
+    },
+    {
+      "tool": "adobe.expression.apply_template_v1",
+      "args": {
+        "compHandle": "comp:1",
+        "layerHandle": "layer:1",
+        "templateId": "loop-cycle-v1",
+        "propertyId": "ADBE Opacity"
+      },
+      "changedFields": ["layers.layer:1.expressions.ADBE Opacity"],
+      "payload": { "templateId": "loop-cycle-v1" }
+    },
+    {
+      "tool": "adobe.expression.remove_v1",
+      "args": {
+        "compHandle": "comp:1",
+        "layerHandle": "layer:1",
+        "propertyId": "ADBE Opacity"
+      },
+      "changedFields": ["layers.layer:1.expressions.ADBE Opacity"],
+      "payload": {}
+    },
+    {
+      "tool": "adobe.command.status_v1",
+      "args": { "targetCommandId": "cmd-target-01" },
+      "changedFields": [],
+      "payload": { "commandId": "cmd-target-01", "status": "RUNNING" }
+    },
+    {
+      "tool": "adobe.command.cancel_v1",
+      "args": { "targetCommandId": "cmd-target-01" },
+      "changedFields": ["commands.cmd-target-01.status"],
+      "payload": {
+        "commandId": "cmd-target-01",
+        "cancelled": true,
+        "status": "CANCELLED"
+      }
+    },
+    {
+      "tool": "adobe.verify_v1",
+      "args": {
+        "compHandle": "comp:1",
+        "expectedSceneDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "changedFields": [],
+      "payload": {
+        "projectOpen": true,
+        "expectedSceneDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "tool": "adobe.render_upload_v1",
+      "args": { "compHandle": "comp:1", "outputName": "render.mp4" },
+      "changedFields": [],
+      "payload": { "queued": true, "outputName": "render.mp4" }
+    },
+    {
+      "tool": "adobe.rollback_v1",
+      "args": {
+        "expectedSceneDigest": "7d2bfd78905d130e04546fd8d3aec9b2e9b77145626767778b766bffce167920"
+      },
+      "changedFields": ["project"],
+      "payload": { "rolledBack": true }
+    }
+  ],
+  "rejectedArgs": [
+    { "script": "app.project.close()" },
+    { "expressionString": "wiggle(2, 5)" },
+    { "presetPath": "/tmp/a.ffx" },
+    { "localPath": "/tmp/a.aep" },
+    { "uploadUrl": "https://example.test/upload" },
+    { "accessToken": "secret" },
+    { "tenantId": "tenant-secret" },
+    { "userId": "user-secret" },
+    { "compIndex": 1 },
+    { "compName": "Main" },
+    { "layerIndex": 1 },
+    { "layerName": "Title" }
+  ]
+}

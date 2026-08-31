@@ -1,53 +1,366 @@
 import { expect, test } from "bun:test";
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { installSignedPanel } from "../src/installer.js";
+import { dirname, join } from "node:path";
+import { runInNewContext } from "node:vm";
+import {
+  activeSignedPanelRelease,
+  directPanelEntryPath,
+  InstallerInterruptedError,
+  installSignedPanel,
+  supportedAfterEffectsRoots,
+} from "../src/installer.js";
 
-test("signed installer copies only the fixed allowlist without a shell", async () => {
-  // Given
-  const root = await mkdtemp(join(tmpdir(), "rvs-installer-"));
+const files = [
+  { path: "scripts/panel/RVSBridgePanel.jsx", sha256: "" },
+  { path: "scripts/extendscript/rvs-dispatcher.jsx", sha256: "" },
+] as const;
+
+const sha256 = (value: string): string =>
+  new Bun.CryptoHasher("sha256").update(value).digest("hex");
+
+const fixture = async (
+  baseRoot?: string,
+): Promise<{
+  readonly root: string;
+  readonly source: string;
+  readonly aeRoot: string;
+  readonly publicKey: string;
+  readonly signManifest: (
+    input?: Readonly<Record<string, unknown>>,
+  ) => Record<string, unknown>;
+}> => {
+  const root = await mkdtemp(join(baseRoot ?? tmpdir(), "rvs-installer-"));
   const source = join(root, "source");
-  const aeRoot = join(root, "After Effects 2026");
-  await Bun.write(join(source, "scripts/panel/RVSBridgePanel.jsx"), "panel");
-  await Bun.write(
-    join(source, "scripts/extendscript/rvs-dispatcher.jsx"),
-    "dispatcher",
-  );
-  const files = [
-    "scripts/panel/RVSBridgePanel.jsx",
-    "scripts/extendscript/rvs-dispatcher.jsx",
-  ] as const;
-  const payload = JSON.stringify({ version: 1, files });
+  const aeRoot = join(root, "Adobe After Effects 2026");
+  await mkdir(join(source, "scripts/panel"), { recursive: true });
+  await mkdir(join(source, "scripts/extendscript"), { recursive: true });
+  await Bun.write(join(source, files[0].path), "panel");
+  await Bun.write(join(source, files[1].path), "dispatcher");
   const keys = generateKeyPairSync("ed25519");
-  const manifest = {
-    version: 1,
-    files,
-    signature: sign(null, Buffer.from(payload), keys.privateKey).toString(
-      "base64",
-    ),
+  const signedFiles = files.map((file) => ({
+    ...file,
+    sha256: sha256(file.path.includes("panel") ? "panel" : "dispatcher"),
+  }));
+  const signManifest = (
+    input: Readonly<Record<string, unknown>> = {},
+  ): Record<string, unknown> => {
+    const unsigned = {
+      version: 1,
+      afterEffectsVersions: ["2024", "2025", "2026"],
+      files: signedFiles,
+      ...input,
+    };
+    return {
+      ...unsigned,
+      signature: sign(
+        null,
+        Buffer.from(JSON.stringify(unsigned)),
+        keys.privateKey,
+      ).toString("base64"),
+    };
   };
+  return {
+    root,
+    source,
+    aeRoot,
+    publicKey: keys.publicKey
+      .export({ type: "spki", format: "pem" })
+      .toString(),
+    signManifest,
+  };
+};
+
+const executeDirectPanel = (
+  entryPath: string,
+): { readonly evaluated: string | null } => {
+  let evaluated: string | null = null;
+  const openFiles = new Map<string, { content: string; position: number }>();
+  runInNewContext(
+    readFileSync(entryPath, "utf8"),
+    {
+      $: {
+        fileName: entryPath,
+        evalFile: (file: { fullName: string }) => {
+          evaluated = file.fullName;
+        },
+      },
+      File: (input: string | { fullName: string }) => {
+        const path = typeof input === "string" ? input : input.fullName;
+        return {
+          fullName: path,
+          parent: { fullName: dirname(path) },
+          exists: existsSync(path),
+          open(mode: string) {
+            if (mode !== "r" || !existsSync(path)) return false;
+            openFiles.set(path, {
+              content: readFileSync(path, "utf8"),
+              position: 0,
+            });
+            return true;
+          },
+          read() {
+            const opened = openFiles.get(path);
+            if (!opened) return "";
+            const content = opened.content.slice(opened.position);
+            opened.position = opened.content.length;
+            return content;
+          },
+          close() {
+            openFiles.delete(path);
+          },
+        };
+      },
+      JSON,
+      Error,
+    },
+    { filename: entryPath },
+  );
+  return { evaluated };
+};
+
+test("installs only signed hash-pinned panel files into the fixed ScriptUI location", async () => {
+  // Given
+  const setup = await fixture();
 
   // When
   await installSignedPanel(
-    source,
-    aeRoot,
-    manifest,
-    keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+    setup.source,
+    setup.aeRoot,
+    setup.signManifest(),
+    setup.publicKey,
   );
 
   // Then
   expect(
     await readFile(
-      join(aeRoot, "Scripts/ScriptUI Panels/RVSBridgePanel.jsx"),
+      join(
+        setup.aeRoot,
+        "Scripts/ScriptUI Panels/RVSBridge/releases",
+        (await activeSignedPanelRelease(setup.aeRoot)) ?? "",
+        "RVSBridgePanel.jsx",
+      ),
       "utf8",
     ),
   ).toBe("panel");
   expect(
     await readFile(
-      join(aeRoot, "Scripts/ScriptUI Panels/rvs-dispatcher.jsx"),
+      join(
+        setup.aeRoot,
+        "Scripts/ScriptUI Panels/RVSBridge/releases",
+        (await activeSignedPanelRelease(setup.aeRoot)) ?? "",
+        "rvs-dispatcher.jsx",
+      ),
       "utf8",
     ),
   ).toBe("dispatcher");
+  expect(
+    (
+      await stat(
+        join(
+          setup.aeRoot,
+          "Scripts/ScriptUI Panels/RVSBridge/releases",
+          (await activeSignedPanelRelease(setup.aeRoot)) ?? "",
+          "RVSBridgePanel.jsx",
+        ),
+      )
+    ).mode & 0o777,
+  ).toBe(0o644);
+  expect(existsSync(directPanelEntryPath(setup.aeRoot))).toBe(true);
+});
+
+test("installs a discoverable ScriptUI loader that executes the active release panel", async () => {
+  // Given
+  const setup = await fixture();
+
+  // When
+  await installSignedPanel(
+    setup.source,
+    setup.aeRoot,
+    setup.signManifest(),
+    setup.publicKey,
+  );
+  const entry = directPanelEntryPath(setup.aeRoot);
+  const executed = executeDirectPanel(entry);
+  const release = await activeSignedPanelRelease(setup.aeRoot);
+
+  // Then
+  expect(existsSync(entry)).toBe(true);
+  expect(executed.evaluated).toBe(
+    join(
+      setup.aeRoot,
+      "Scripts/ScriptUI Panels/RVSBridge/releases",
+      release ?? "",
+      "RVSBridgePanel.jsx",
+    ),
+  );
+});
+
+test("rejects traversal, unknown files, invalid signatures, hashes, and unsupported AE versions before mutation", async () => {
+  // Given
+  const setup = await fixture();
+  const cases = [
+    setup.signManifest({
+      files: [
+        { path: "../evil.jsx", sha256: "0".repeat(64) },
+        { path: files[1].path, sha256: sha256("dispatcher") },
+      ],
+    }),
+    setup.signManifest({
+      files: [
+        {
+          path: "scripts/panel/RVSBridgePanel.jsx;touch",
+          sha256: "0".repeat(64),
+        },
+        { path: files[1].path, sha256: sha256("dispatcher") },
+      ],
+    }),
+    setup.signManifest({ unexpected: true }),
+    { ...setup.signManifest(), signature: "invalid-base64" },
+    setup.signManifest({
+      files: [
+        { path: files[0].path, sha256: "0".repeat(64) },
+        { path: files[1].path, sha256: sha256("dispatcher") },
+      ],
+    }),
+    setup.signManifest({ afterEffectsVersions: ["2024"] }),
+  ];
+
+  // When / Then
+  for (const manifest of cases) {
+    await expect(
+      installSignedPanel(setup.source, setup.aeRoot, manifest, setup.publicKey),
+    ).rejects.toThrow();
+  }
+  expect(existsSync(directPanelEntryPath(setup.aeRoot))).toBe(false);
+});
+
+test("keeps the prior release active across an interruption before the one-file pointer transition", async () => {
+  // Given
+  const setup = await fixture();
+  await installSignedPanel(
+    setup.source,
+    setup.aeRoot,
+    setup.signManifest(),
+    setup.publicKey,
+  );
+  const before = await activeSignedPanelRelease(setup.aeRoot);
+  await Bun.write(join(setup.source, files[0].path), "panel v2");
+  const manifest = setup.signManifest({
+    files: [
+      { path: files[0].path, sha256: sha256("panel v2") },
+      { path: files[1].path, sha256: sha256("dispatcher") },
+    ],
+  });
+
+  // When
+  await expect(
+    installSignedPanel(setup.source, setup.aeRoot, manifest, setup.publicKey, {
+      interruptBeforeActivation: true,
+    }),
+  ).rejects.toBeInstanceOf(InstallerInterruptedError);
+
+  // Then
+  expect(await activeSignedPanelRelease(setup.aeRoot)).toBe(before);
+  expect(executeDirectPanel(directPanelEntryPath(setup.aeRoot)).evaluated).toBe(
+    join(
+      setup.aeRoot,
+      "Scripts/ScriptUI Panels/RVSBridge/releases",
+      before ?? "",
+      "RVSBridgePanel.jsx",
+    ),
+  );
+  await installSignedPanel(
+    setup.source,
+    setup.aeRoot,
+    manifest,
+    setup.publicKey,
+  );
+  expect(
+    await readFile(
+      join(
+        setup.aeRoot,
+        "Scripts/ScriptUI Panels/RVSBridge/releases",
+        (await activeSignedPanelRelease(setup.aeRoot)) ?? "",
+        "RVSBridgePanel.jsx",
+      ),
+      "utf8",
+    ),
+  ).toBe("panel v2");
+});
+
+test("installs when After Effects root is on a different volume from system temp", async () => {
+  // Given — source on /tmp (root FS), AE root on /dev/shm (tmpfs)
+  const sourceSetup = await fixture("/tmp");
+  const aeHost = await mkdtemp(join("/dev/shm", "rvs-ae-"));
+  const aeRoot = join(aeHost, "Adobe After Effects 2026");
+  try {
+    // When
+    await installSignedPanel(
+      sourceSetup.source,
+      aeRoot,
+      sourceSetup.signManifest(),
+      sourceSetup.publicKey,
+    );
+
+    // Then
+    const release = await activeSignedPanelRelease(aeRoot);
+    expect(release).toBeTruthy();
+    expect(existsSync(directPanelEntryPath(aeRoot))).toBe(true);
+    expect(executeDirectPanel(directPanelEntryPath(aeRoot)).evaluated).toBe(
+      join(
+        aeRoot,
+        "Scripts/ScriptUI Panels/RVSBridge/releases",
+        release ?? "",
+        "RVSBridgePanel.jsx",
+      ),
+    );
+    const releases = join(aeRoot, "Scripts/ScriptUI Panels/RVSBridge/releases");
+    expect(
+      (await readdir(releases)).filter((name) =>
+        name.startsWith(".rvs-adobe-install-"),
+      ),
+    ).toEqual([]);
+  } finally {
+    await rm(aeHost, { recursive: true, force: true });
+    await rm(sourceSetup.root, { recursive: true, force: true });
+  }
+});
+
+test("enumerates canonical roots and rejects a malformed Windows root", async () => {
+  // Given / When
+  const mac = supportedAfterEffectsRoots(
+    "darwin",
+    "/Users/rvs",
+    "C:\\Program Files",
+  );
+  const linux = supportedAfterEffectsRoots(
+    "linux",
+    "/home/rvs",
+    "C:\\Program Files",
+  );
+  const windows = supportedAfterEffectsRoots(
+    "win32",
+    "C:\\Users\\rvs",
+    "D:\\Adobe",
+  );
+
+  // Then
+  expect(mac).toContain("/Users/rvs/Applications/Adobe After Effects 2026");
+  expect(linux).toContain(
+    "/home/rvs/.wine/drive_c/Program Files/Adobe/Adobe After Effects 2026",
+  );
+  expect(windows).toContain("D:\\Adobe\\Adobe\\Adobe After Effects 2026");
+  expect(windows.every((value) => !value.includes("/"))).toBe(true);
+  const setup = await fixture();
+  await expect(
+    installSignedPanel(
+      setup.source,
+      "D:\\Adobe/Adobe After Effects 2026",
+      setup.signManifest(),
+      setup.publicKey,
+    ),
+  ).rejects.toThrow("non-canonical Windows");
 });

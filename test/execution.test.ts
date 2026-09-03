@@ -14,11 +14,29 @@ const base = {
   projectHandle: "project:working-copy" as const,
 };
 
+const writeProgram = async (path: string, body: string): Promise<string> => {
+  await writeFile(path, body, { mode: 0o700 });
+  return path;
+};
+
 test("finalizes the P4.5 render plan with local render and connector upload", async () => {
   const root = await Bun.$`mktemp -d`.text().then((value) => value.trim());
   const original = join(root, "source.aep");
   await writeFile(original, "ORIGINAL");
   const project = await AdobeWorkingCopy.open(root, base.jobId, original);
+  const renderProgram = await writeProgram(
+    join(root, "renderer.sh"),
+    `#!/bin/sh
+ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=320x240:r=30:d=1 -c:v libx264 -profile:v high -pix_fmt yuv420p -an -y "$3"
+`,
+  );
+  const uploadProgram = await writeProgram(
+    join(root, "uploader.sh"),
+    `#!/bin/sh
+test "$RVS_CONNECTOR_AUTHORIZATION" = "local-connector-secret" || exit 1
+echo '{"uploadId":"upl-adobe-local"}'
+`,
+  );
   const command = {
     ...base,
     tool: "adobe.render_upload_v1" as const,
@@ -45,17 +63,8 @@ test("finalizes the P4.5 render plan with local render and connector upload", as
     },
     {
       project,
-      renderer: {
-        render: async ({ outputPath }) => {
-          await Bun.$`ffmpeg -hide_banner -loglevel error -f lavfi -i color=c=black:s=320x240:r=30:d=1 -c:v libx264 -profile:v high -pix_fmt yuv420p -an -y ${outputPath}`;
-        },
-      },
-      uploader: {
-        upload: async (_path, authorization) => {
-          expect(authorization).toBe("local-connector-secret");
-          return { uploadId: "upl-adobe-local" };
-        },
-      },
+      renderProgram,
+      uploadProgram,
       connectorAuthorization: "local-connector-secret",
     },
   );
@@ -91,8 +100,8 @@ test("cancelled panel result verifies the filesystem-bound original", async () =
     },
     {
       project,
-      renderer: { render: async () => undefined },
-      uploader: { upload: async () => ({ uploadId: "upl-never" }) },
+      renderProgram: undefined,
+      uploadProgram: undefined,
       connectorAuthorization: "local-connector-secret",
     },
   );

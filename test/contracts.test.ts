@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import golden from "../contract/adobe-mcp-v1.json" with { type: "json" };
 import {
-  AdobeCommandEnvelopeSchema,
-  AdobeCommandResultSchema,
-  TOOL_NAMES,
+  ADOBE_TOOL_NAMES_V1,
+  AdobeCommandEnvelopeV1Schema,
+  AdobeCommandResultV1Schema,
 } from "../src/contracts.js";
 
 const valid = {
@@ -20,10 +20,13 @@ const valid = {
 
 describe("Adobe command boundary", () => {
   test("accepts every exact versioned tool", () => {
-    expect(golden.tools.map(({ tool }) => tool)).toEqual([...TOOL_NAMES]);
+    expect(golden.tools.map(({ tool }) => tool)).toEqual([
+      ...ADOBE_TOOL_NAMES_V1,
+    ]);
     for (const { tool, args } of golden.tools) {
       expect(
-        AdobeCommandEnvelopeSchema.safeParse({ ...valid, tool, args }).success,
+        AdobeCommandEnvelopeV1Schema.safeParse({ ...valid, tool, args })
+          .success,
       ).toBe(true);
     }
   });
@@ -31,11 +34,11 @@ describe("Adobe command boundary", () => {
   test("rejects unknown fields and forbidden cloud input before mutation", () => {
     for (const forbidden of golden.rejectedArgs)
       expect(
-        AdobeCommandEnvelopeSchema.safeParse({ ...valid, args: forbidden })
+        AdobeCommandEnvelopeV1Schema.safeParse({ ...valid, args: forbidden })
           .success,
       ).toBe(false);
     expect(
-      AdobeCommandEnvelopeSchema.safeParse({ ...valid, surprise: true })
+      AdobeCommandEnvelopeV1Schema.safeParse({ ...valid, surprise: true })
         .success,
     ).toBe(false);
   });
@@ -67,7 +70,7 @@ describe("Adobe command boundary", () => {
     ];
     for (const candidate of cases) {
       expect(
-        AdobeCommandEnvelopeSchema.safeParse({ ...valid, ...candidate })
+        AdobeCommandEnvelopeV1Schema.safeParse({ ...valid, ...candidate })
           .success,
       ).toBe(false);
     }
@@ -88,9 +91,9 @@ describe("Adobe command boundary", () => {
       warnings: [],
       payload: {},
     };
-    expect(AdobeCommandResultSchema.safeParse(result).success).toBe(true);
+    expect(AdobeCommandResultV1Schema.safeParse(result).success).toBe(true);
     expect(
-      AdobeCommandResultSchema.safeParse({ ...result, extra: true }).success,
+      AdobeCommandResultV1Schema.safeParse({ ...result, extra: true }).success,
     ).toBe(false);
   });
 });

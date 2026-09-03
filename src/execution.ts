@@ -1,24 +1,23 @@
-import type { AdobeCommandEnvelope, AdobeCommandResult } from "./contracts.js";
-import { AdobeCommandResultSchema } from "./contracts.js";
 import type {
-  AdobeWorkingCopy,
-  LocalRenderAdapter,
-  LocalUploadAdapter,
-} from "./working-copy.js";
+  AdobeCommandEnvelopeV1,
+  AdobeCommandResultV1,
+} from "./contracts.js";
+import { AdobeCommandResultV1Schema } from "./contracts.js";
+import type { AdobeWorkingCopy } from "./working-copy.js";
 
 type ExecutionContext = {
   readonly project: AdobeWorkingCopy;
-  readonly renderer: LocalRenderAdapter;
-  readonly uploader: LocalUploadAdapter;
+  readonly renderProgram: string | undefined;
+  readonly uploadProgram: string | undefined;
   readonly connectorAuthorization: string;
 };
 
 export const finalizePanelResult = async (
-  command: AdobeCommandEnvelope,
+  command: AdobeCommandEnvelopeV1,
   panelResultInput: unknown,
   context: ExecutionContext,
-): Promise<AdobeCommandResult> => {
-  const panelResult = AdobeCommandResultSchema.parse(panelResultInput);
+): Promise<AdobeCommandResultV1> => {
+  const panelResult = AdobeCommandResultV1Schema.parse(panelResultInput);
   if (
     panelResult.commandId !== command.commandId ||
     panelResult.nonce !== command.nonce ||
@@ -34,7 +33,7 @@ export const finalizePanelResult = async (
     const rollback = await context.project.rollback(
       command.args.expectedSceneDigest,
     );
-    return AdobeCommandResultSchema.parse({
+    return AdobeCommandResultV1Schema.parse({
       ...panelResult,
       beforeDigest: rollback.beforeDigest,
       afterDigest: rollback.afterDigest,
@@ -42,13 +41,20 @@ export const finalizePanelResult = async (
     });
   }
   if (command.tool === "adobe.render_upload_v1") {
+    if (
+      context.renderProgram === undefined ||
+      context.uploadProgram === undefined
+    )
+      throw new TypeError("local render/upload configuration is required");
     const rendered = await context.project.renderUpload(
       command.args,
-      context.renderer,
-      context.uploader,
+      {
+        renderProgram: context.renderProgram,
+        uploadProgram: context.uploadProgram,
+      },
       context.connectorAuthorization,
     );
-    return AdobeCommandResultSchema.parse({
+    return AdobeCommandResultV1Schema.parse({
       ...panelResult,
       payload: { uploadId: rendered.uploadId },
       mp4: rendered.mp4,

@@ -1,20 +1,20 @@
 import { expect, test } from "bun:test";
 import golden from "../contract/adobe-mcp-v1.json" with { type: "json" };
 import {
-  AdobeCommandEnvelopeSchema,
-  AdobeCommandResultSchema,
+  AdobeCommandEnvelopeV1Schema,
+  AdobeCommandResultV1Schema,
 } from "../src/contracts.js";
 import { dispatchFixture } from "./dispatcher-fixture.js";
 
 test("installed dispatcher executes every strict golden command shape", () => {
   for (const [index, vector] of golden.tools.entries()) {
-    const command = AdobeCommandEnvelopeSchema.parse({
+    const command = AdobeCommandEnvelopeV1Schema.parse({
       ...golden.commandBase,
       commandId: `cmd-dispatch-${String(index).padStart(2, "0")}`,
       tool: vector.tool,
       args: vector.args,
     });
-    const result = AdobeCommandResultSchema.parse(dispatchFixture(command));
+    const result = AdobeCommandResultV1Schema.parse(dispatchFixture(command));
     expect(result.payload).toMatchObject(vector.payload);
     expect(result.changedFields).toEqual(vector.changedFields);
   }

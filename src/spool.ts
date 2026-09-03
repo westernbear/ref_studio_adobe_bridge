@@ -3,47 +3,48 @@ import { link, mkdir, open, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import type {
-  AdobeCommandEnvelope,
-  AdobeCommandResult,
+  AdobeCommandEnvelopeV1,
+  AdobeCommandResultV1,
   QueuedCommand,
   RunningCommand,
 } from "./contracts.js";
 import {
-  AdobeCommandEnvelopeSchema,
-  AdobeCommandResultSchema,
-  StoredCommandSchema,
+  AdobeCommandEnvelopeV1Schema,
+  AdobeCommandResultV1Schema,
 } from "./contracts.js";
 import { BindingError, SpoolStateError } from "./errors.js";
 
 const MAX_FILE_BYTES = 1_048_576; // lockstep with RESOURCE_BUDGETS.maxSpoolFileBytes
 const DEFAULT_LEASE_MS = 30_000;
-const TRANSITION_LEASE_MS = 30_000;
 const TRANSITION_WAIT_MS = 5_000;
-const RECOVERY_LEASE_MS = 250;
 const TimestampSchema = z.number().int().nonnegative();
-const LifecycleSchema = StoredCommandSchema.and(
-  z
-    .object({
-      queuedAtMs: TimestampSchema,
-      runningAtMs: TimestampSchema.optional(),
-      leaseExpiresAtMs: TimestampSchema.optional(),
-    })
-    .passthrough(),
-).superRefine((value, context) => {
-  if (
-    value.status === "QUEUED" &&
-    (value.runningAtMs !== undefined || value.leaseExpiresAtMs !== undefined)
-  )
-    context.addIssue({ code: "custom", message: "queued command has lease" });
-  if (
-    value.status === "RUNNING" &&
-    (value.runningAtMs === undefined ||
-      value.leaseExpiresAtMs === undefined ||
-      value.runningAtMs < value.queuedAtMs ||
-      value.leaseExpiresAtMs <= value.runningAtMs)
-  )
-    context.addIssue({ code: "custom", message: "invalid running lease" });
-});
+const LifecycleExtrasSchema = z
+  .object({
+    status: z.enum(["QUEUED", "RUNNING"]),
+    queuedAtMs: TimestampSchema,
+    runningAtMs: TimestampSchema.optional(),
+    leaseExpiresAtMs: TimestampSchema.optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (
+      value.status === "QUEUED" &&
+      (value.runningAtMs !== undefined || value.leaseExpiresAtMs !== undefined)
+    )
+      context.addIssue({ code: "custom", message: "queued command has lease" });
+    if (
+      value.status === "RUNNING" &&
+      (value.runningAtMs === undefined ||
+        value.leaseExpiresAtMs === undefined ||
+        value.runningAtMs < value.queuedAtMs ||
+        value.leaseExpiresAtMs <= value.runningAtMs)
+    )
+      context.addIssue({ code: "custom", message: "invalid running lease" });
+  });
+type StoredCommand = AdobeCommandEnvelopeV1 &
+  z.infer<typeof LifecycleExtrasSchema>;
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 const LockSchema = z
   .object({
     commandId: z.string().min(3).max(128),
@@ -52,12 +53,6 @@ const LockSchema = z
   })
   .strict()
   .refine((value) => value.leaseExpiresAtMs > value.acquiredAtMs);
-const TransitionSchema = z
-  .object({
-    token: z.string().uuid(),
-    expiresAtMs: TimestampSchema,
-  })
-  .strict();
 
 type SpoolOptions = {
   readonly leaseMs?: number;
@@ -157,117 +152,26 @@ export class CommandSpool {
     commandId: string,
     action: () => Promise<T>,
   ): Promise<T> {
-    const token = randomUUID();
     const deadline = Date.now() + TRANSITION_WAIT_MS;
-    while (
-      !(await this.#createExclusive(this.#transition, {
-        token,
-        expiresAtMs: Date.now() + TRANSITION_LEASE_MS,
-      }))
-    ) {
-      if (Date.now() >= deadline)
-        throw new SpoolStateError(commandId, "transition lock timeout");
-      let existing: z.infer<typeof TransitionSchema>;
+    while (true) {
       try {
-        existing = TransitionSchema.parse(
-          await this.#readBounded(
-            this.#transition,
-            commandId,
-            "transition lock",
-          ),
-        );
+        await writeFile(this.#transition, `${commandId}\n`, {
+          flag: "wx",
+          mode: 0o600,
+        });
+        break;
       } catch (error) {
-        if (isFsError(error, "ENOENT")) continue;
-        if (error instanceof z.ZodError)
-          throw new SpoolStateError(commandId, "malformed transition lock");
-        throw error;
+        if (!isFsError(error, "EEXIST")) throw error;
+        if (Date.now() >= deadline)
+          throw new SpoolStateError(commandId, "transition lock timeout");
+        await new Promise((resolve) => setTimeout(resolve, 1));
       }
-      if (Date.now() > existing.expiresAtMs) {
-        const recovery = `${this.#transition}.${existing.token}.recovery`;
-        if (
-          await this.#createExclusive(recovery, {
-            token: existing.token,
-            expiresAtMs: Date.now() + RECOVERY_LEASE_MS,
-          })
-        ) {
-          try {
-            const current = TransitionSchema.parse(
-              await this.#readBounded(
-                this.#transition,
-                commandId,
-                "transition lock",
-              ),
-            );
-            if (
-              current.token === existing.token &&
-              Date.now() > current.expiresAtMs
-            )
-              await rm(this.#transition, { force: true });
-          } catch (error) {
-            if (!isFsError(error, "ENOENT")) throw error;
-          } finally {
-            await rm(recovery, { force: true });
-          }
-        } else {
-          let marker: z.infer<typeof TransitionSchema>;
-          try {
-            marker = TransitionSchema.parse(
-              await this.#readBounded(
-                recovery,
-                commandId,
-                "transition recovery",
-              ),
-            );
-          } catch (error) {
-            if (isFsError(error, "ENOENT")) continue;
-            if (error instanceof z.ZodError)
-              throw new SpoolStateError(
-                commandId,
-                "malformed transition recovery",
-              );
-            throw error;
-          }
-          if (marker.token !== existing.token)
-            throw new SpoolStateError(
-              commandId,
-              "transition recovery binding mismatch",
-            );
-          if (Date.now() > marker.expiresAtMs)
-            await rm(recovery, { force: true });
-        }
-        continue;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1));
     }
     try {
-      await this.#cleanupOrphanRecoveries();
       return await action();
     } finally {
-      let existing: z.infer<typeof TransitionSchema> | undefined;
-      try {
-        existing = TransitionSchema.parse(
-          await this.#readBounded(
-            this.#transition,
-            commandId,
-            "transition lock",
-          ),
-        );
-      } catch (error) {
-        if (!isFsError(error, "ENOENT")) throw error;
-      }
-      if (existing?.token === token)
-        await rm(this.#transition, { force: true });
+      await rm(this.#transition, { force: true });
     }
-  }
-
-  async #cleanupOrphanRecoveries(): Promise<void> {
-    const names = (await readdir(this.#root)).filter(
-      (name) =>
-        name.startsWith("transition.lock.json.") && name.endsWith(".recovery"),
-    );
-    await Promise.all(
-      names.map((name) => rm(join(this.#root, name), { force: true })),
-    );
   }
 
   async #releaseMutationLock(commandId: string): Promise<void> {
@@ -289,11 +193,25 @@ export class CommandSpool {
     path: string,
     commandId: string,
     label: string,
-  ): Promise<z.infer<typeof LifecycleSchema> | undefined> {
+  ): Promise<StoredCommand | undefined> {
     try {
-      return LifecycleSchema.parse(
-        await this.#readBounded(path, commandId, label),
-      );
+      const raw = await this.#readBounded(path, commandId, label);
+      if (!isRecord(raw))
+        throw new SpoolStateError(commandId, `malformed ${label}`);
+      const {
+        status,
+        queuedAtMs,
+        runningAtMs,
+        leaseExpiresAtMs,
+        ...envelopeRaw
+      } = raw;
+      const extras = LifecycleExtrasSchema.parse({
+        status,
+        queuedAtMs,
+        ...(runningAtMs === undefined ? {} : { runningAtMs }),
+        ...(leaseExpiresAtMs === undefined ? {} : { leaseExpiresAtMs }),
+      });
+      return { ...AdobeCommandEnvelopeV1Schema.parse(envelopeRaw), ...extras };
     } catch (error) {
       if (isFsError(error, "ENOENT")) return undefined;
       if (error instanceof z.ZodError)
@@ -303,15 +221,15 @@ export class CommandSpool {
   }
 
   #assertStoredMatches(
-    stored: z.infer<typeof LifecycleSchema>,
-    command: AdobeCommandEnvelope,
+    stored: StoredCommand,
+    command: AdobeCommandEnvelopeV1,
   ): void {
     const envelope = this.#envelope(stored);
     if (JSON.stringify(envelope) !== JSON.stringify(command))
       throw new BindingError(command.commandId);
   }
 
-  #envelope(stored: z.infer<typeof LifecycleSchema>): AdobeCommandEnvelope {
+  #envelope(stored: StoredCommand): AdobeCommandEnvelopeV1 {
     const {
       status: _status,
       queuedAtMs: _queuedAtMs,
@@ -319,19 +237,17 @@ export class CommandSpool {
       leaseExpiresAtMs: _leaseExpiresAtMs,
       ...envelope
     } = stored;
-    return AdobeCommandEnvelopeSchema.parse(envelope);
+    return AdobeCommandEnvelopeV1Schema.parse(envelope);
   }
 
-  #lifecycle(
-    stored: z.infer<typeof LifecycleSchema>,
-  ): QueuedCommand | RunningCommand {
+  #lifecycle(stored: StoredCommand): QueuedCommand | RunningCommand {
     const envelope = this.#envelope(stored);
     return stored.status === "QUEUED"
       ? { ...envelope, status: "QUEUED" }
       : { ...envelope, status: "RUNNING" };
   }
 
-  #binding(command: AdobeCommandEnvelope) {
+  #binding(command: AdobeCommandEnvelopeV1) {
     return {
       nonce: command.nonce,
       sceneDigest: command.sceneDigest,
@@ -343,7 +259,7 @@ export class CommandSpool {
     };
   }
 
-  async #assertBinding(command: AdobeCommandEnvelope): Promise<void> {
+  async #assertBinding(command: AdobeCommandEnvelopeV1): Promise<void> {
     const existing = await this.#readBounded(
       join(this.#bindings, `${command.commandId}.json`),
       command.commandId,
@@ -353,9 +269,11 @@ export class CommandSpool {
       throw new BindingError(command.commandId);
   }
 
-  async #terminal(commandId: string): Promise<AdobeCommandResult | undefined> {
+  async #terminal(
+    commandId: string,
+  ): Promise<AdobeCommandResultV1 | undefined> {
     try {
-      return AdobeCommandResultSchema.parse(
+      return AdobeCommandResultV1Schema.parse(
         await this.#readBounded(
           join(this.#results, `${commandId}.json`),
           commandId,
@@ -371,9 +289,9 @@ export class CommandSpool {
   }
 
   #assertResultBinding(
-    result: AdobeCommandResult,
+    result: AdobeCommandResultV1,
     expected: Pick<
-      AdobeCommandEnvelope,
+      AdobeCommandEnvelopeV1,
       "commandId" | "nonce" | "sceneDigest" | "deviceId" | "jobId"
     >,
   ): void {
@@ -389,8 +307,8 @@ export class CommandSpool {
 
   public async enqueue(
     input: unknown,
-  ): Promise<QueuedCommand | RunningCommand | AdobeCommandResult> {
-    const command = AdobeCommandEnvelopeSchema.parse(input);
+  ): Promise<QueuedCommand | RunningCommand | AdobeCommandResultV1> {
+    const command = AdobeCommandEnvelopeV1Schema.parse(input);
     await this.#init();
     const bindingPath = join(this.#bindings, `${command.commandId}.json`);
     if (!(await this.#createExclusive(bindingPath, this.#binding(command))))
@@ -509,8 +427,8 @@ export class CommandSpool {
     });
   }
 
-  public async complete(input: unknown): Promise<AdobeCommandResult> {
-    const result = AdobeCommandResultSchema.parse(input);
+  public async complete(input: unknown): Promise<AdobeCommandResultV1> {
+    const result = AdobeCommandResultV1Schema.parse(input);
     await this.#init();
     return this.#withTransition(result.commandId, async () => {
       const terminal = await this.#terminal(result.commandId);
@@ -554,8 +472,8 @@ export class CommandSpool {
   }
 
   public async result(
-    command: AdobeCommandEnvelope,
-  ): Promise<AdobeCommandResult> {
+    command: AdobeCommandEnvelopeV1,
+  ): Promise<AdobeCommandResultV1> {
     await this.#assertBinding(command);
     const result = await this.#terminal(command.commandId);
     if (result === undefined)
@@ -661,7 +579,7 @@ export class CommandSpool {
       }
       const envelope = this.#envelope(command);
       if (terminal !== undefined) this.#assertResultBinding(terminal, envelope);
-      const cancelled = AdobeCommandResultSchema.parse({
+      const cancelled = AdobeCommandResultV1Schema.parse({
         version: 1,
         commandId,
         nonce: envelope.nonce,

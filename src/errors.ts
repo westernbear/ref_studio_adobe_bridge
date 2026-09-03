@@ -14,10 +14,3 @@ export class SpoolStateError extends Error {
     this.name = "SpoolStateError";
   }
 }
-
-export class AuthenticationError extends Error {
-  public constructor(public readonly reason = "invalid") {
-    super(`cloud relay authentication failed: ${reason}`);
-    this.name = "AuthenticationError";
-  }
-}

@@ -11,18 +11,19 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { z } from "zod";
+import { AdobeCommandResultV1Schema } from "./contracts.js";
 
 const execFileAsync = promisify(execFile);
-const IdentifierSchema = z.string().regex(/^[A-Za-z0-9._-]{3,128}$/u);
+const IdentifierSchema = AdobeCommandResultV1Schema.shape.commandId;
+const DigestSchema = AdobeCommandResultV1Schema.shape.sceneDigest;
 const OutputNameSchema = z
   .string()
   .min(1)
   .max(128)
   .regex(/^[A-Za-z0-9._-]+\.mp4$/u);
-const DigestSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 const ProbeSchema = z
   .object({
     streams: z
@@ -47,60 +48,6 @@ const ProbeSchema = z
   .passthrough();
 const MAX_MP4_BYTES = 2_147_483_648;
 const MAX_RENDER_MS = 15 * 60_000;
-
-type RenderRequest = {
-  readonly compHandle: string;
-  readonly outputPath: string;
-  readonly workingCopyPath: string;
-  readonly signal: AbortSignal;
-};
-
-export type LocalRenderAdapter = {
-  readonly render: (request: RenderRequest) => Promise<void>;
-};
-
-export type LocalUploadAdapter = {
-  readonly upload: (
-    localPath: string,
-    authorization: string,
-  ) => Promise<{ readonly uploadId: string }>;
-};
-
-export class LocalProgramRenderAdapter implements LocalRenderAdapter {
-  public constructor(private readonly executable: string) {}
-
-  public async render(request: RenderRequest): Promise<void> {
-    const renderEnvironment = { ...process.env };
-    delete renderEnvironment["RVS_ADOBE_UPLOAD_AUTH"];
-    await execFileAsync(
-      this.executable,
-      [request.workingCopyPath, request.compHandle, request.outputPath],
-      {
-        maxBuffer: 1_048_576,
-        signal: request.signal,
-        env: renderEnvironment,
-      },
-    );
-  }
-}
-
-export class LocalProgramUploadAdapter implements LocalUploadAdapter {
-  public constructor(private readonly executable: string) {}
-
-  public async upload(
-    localPath: string,
-    authorization: string,
-  ): Promise<{ readonly uploadId: string }> {
-    const { stdout } = await execFileAsync(this.executable, [localPath], {
-      maxBuffer: 1_048_576,
-      env: { ...process.env, RVS_CONNECTOR_AUTHORIZATION: authorization },
-    });
-    return z
-      .object({ uploadId: IdentifierSchema })
-      .strict()
-      .parse(JSON.parse(stdout));
-  }
-}
 
 type OriginalBinding = {
   readonly originalPath: string;
@@ -217,8 +164,10 @@ export class AdobeWorkingCopy {
 
   public async renderUpload(
     input: { readonly compHandle: string; readonly outputName: string },
-    renderer: LocalRenderAdapter,
-    uploader: LocalUploadAdapter,
+    programs: {
+      readonly renderProgram: string;
+      readonly uploadProgram: string;
+    },
     connectorAuthorization: string,
   ): Promise<{
     readonly uploadId: string;
@@ -242,12 +191,17 @@ export class AdobeWorkingCopy {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), MAX_RENDER_MS);
     try {
-      await renderer.render({
-        compHandle: input.compHandle,
-        outputPath,
-        workingCopyPath: this.path,
-        signal: controller.signal,
-      });
+      const renderEnvironment = { ...process.env };
+      delete renderEnvironment["RVS_ADOBE_UPLOAD_AUTH"];
+      await execFileAsync(
+        programs.renderProgram,
+        [this.path, input.compHandle, outputPath],
+        {
+          maxBuffer: 1_048_576,
+          signal: controller.signal,
+          env: renderEnvironment,
+        },
+      );
       const output = await stat(outputPath);
       if (!output.isFile() || output.size <= 0 || output.size > MAX_MP4_BYTES)
         throw new AdobeWorkingCopyError("ADOBE_RENDER_SIZE_REJECTED");
@@ -284,10 +238,21 @@ export class AdobeWorkingCopy {
         frameCount <= 0
       )
         throw new AdobeWorkingCopyError("ADOBE_RENDER_TIMING_REJECTED");
-      const uploaded = await uploader.upload(
-        outputPath,
-        connectorAuthorization,
+      const { stdout: uploadStdout } = await execFileAsync(
+        programs.uploadProgram,
+        [outputPath],
+        {
+          maxBuffer: 1_048_576,
+          env: {
+            ...process.env,
+            RVS_CONNECTOR_AUTHORIZATION: connectorAuthorization,
+          },
+        },
       );
+      const uploaded = z
+        .object({ uploadId: IdentifierSchema })
+        .strict()
+        .parse(JSON.parse(uploadStdout));
       await this.assertOriginalUnchanged();
       return {
         uploadId: IdentifierSchema.parse(uploaded.uploadId),

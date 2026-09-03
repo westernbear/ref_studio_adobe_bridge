@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import golden from "../contract/adobe-mcp-v1.json" with { type: "json" };
-import { AdobeCommandResultSchema } from "../src/contracts.js";
+import { AdobeCommandResultV1Schema } from "../src/contracts.js";
 import { createDispatcherFixture } from "./dispatcher-fixture.js";
 
 const command = (tool: string, args: unknown, index: number) => ({
@@ -45,7 +45,7 @@ const canonical = (value: unknown): string => {
 test("dispatcher returns canonical project digests and actual mutation readback", () => {
   const fixture = createDispatcherFixture();
   const before = fixture.snapshot();
-  const created = AdobeCommandResultSchema.parse(
+  const created = AdobeCommandResultV1Schema.parse(
     fixture.dispatch(
       command(
         "adobe.layer.create_text_v1",

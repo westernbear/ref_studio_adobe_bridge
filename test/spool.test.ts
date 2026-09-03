@@ -11,7 +11,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AdobeCommandResult } from "../src/contracts.js";
+import type { AdobeCommandResultV1 } from "../src/contracts.js";
 import { CommandSpool } from "../src/spool.js";
 
 const command = {
@@ -171,67 +171,6 @@ describe("atomic command spool", () => {
     expect(readFile(lockPath, "utf8")).rejects.toThrow();
   });
 
-  test("restart reclaims a fresh stranded transition recovery marker within the public bound", async () => {
-    // Given
-    const root = await mkdtemp(join(tmpdir(), "rvs-spool-"));
-    let now = 1_000;
-    const spool = new CommandSpool(root, { leaseMs: 500, now: () => now });
-    await spool.enqueue(command);
-    await spool.claimNext();
-    now = 2_000;
-    const token = "00000000-0000-4000-8000-000000000001";
-    const transitionPath = join(root, "transition.lock.json");
-    await writeFile(transitionPath, JSON.stringify({ token, expiresAtMs: 0 }), {
-      mode: 0o600,
-    });
-    await writeFile(
-      `${transitionPath}.${token}.recovery`,
-      JSON.stringify({ token, expiresAtMs: Date.now() + 250 }),
-      { mode: 0o600 },
-    );
-
-    // When
-    const recovered = await Promise.race([
-      spool.recover(),
-      Bun.sleep(2_000).then(() => {
-        throw new Error("transition recovery exceeded two seconds");
-      }),
-    ]);
-
-    // Then
-    expect(recovered).toBe(1);
-    expect(
-      (await readdir(root)).filter((name) => name.includes("transition")),
-    ).toEqual([]);
-    expect((await spool.claimNext())?.status).toBe("RUNNING");
-    await spool.cancel(command.commandId);
-  });
-
-  test("new transition owner removes a marker orphaned after transition deletion", async () => {
-    // Given
-    const root = await mkdtemp(join(tmpdir(), "rvs-spool-"));
-    const spool = new CommandSpool(root);
-    await spool.enqueue(command);
-    const token = "00000000-0000-4000-8000-000000000002";
-    const marker = join(root, `transition.lock.json.${token}.recovery`);
-    await writeFile(
-      marker,
-      JSON.stringify({ token, expiresAtMs: Date.now() + 30_000 }),
-      { mode: 0o600 },
-    );
-
-    // When
-    const claimed = await spool.claimNext();
-
-    // Then
-    expect(claimed?.status).toBe("RUNNING");
-    expect(readFile(marker, "utf8")).rejects.toThrow();
-    await spool.cancel(command.commandId);
-    expect(
-      (await readdir(root)).filter((name) => name.includes("transition")),
-    ).toEqual([]);
-  });
-
   test("rejects replay from another device or job", async () => {
     const root = await mkdtemp(join(tmpdir(), "rvs-spool-"));
     const spool = new CommandSpool(root);
@@ -246,7 +185,7 @@ describe("atomic command spool", () => {
     const spool = new CommandSpool(root);
     await spool.enqueue(command);
     await spool.claimNext();
-    const result: AdobeCommandResult = {
+    const result: AdobeCommandResultV1 = {
       version: 1,
       commandId: command.commandId,
       nonce: command.nonce,
@@ -275,7 +214,7 @@ describe("atomic command spool", () => {
     const spool = new CommandSpool(root);
     await spool.enqueue(command);
     await spool.claimNext();
-    const result: AdobeCommandResult = {
+    const result: AdobeCommandResultV1 = {
       version: 1,
       commandId: command.commandId,
       nonce: command.nonce,

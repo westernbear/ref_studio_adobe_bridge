@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import {
-  type AdobeCommandResult,
-  AdobeCommandResultSchema,
+  type AdobeCommandResultV1,
+  AdobeCommandResultV1Schema,
 } from "../src/contracts.js";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -220,7 +220,7 @@ class FakeShape {
 const normalized = (value: unknown): Json => JSON.parse(JSON.stringify(value));
 
 export type DispatcherFixture = {
-  readonly dispatch: (command: unknown) => AdobeCommandResult;
+  readonly dispatch: (command: unknown) => AdobeCommandResultV1;
   readonly snapshot: () => Json;
   readonly canonical: () => string;
   readonly sha256: (value: string) => string;
@@ -347,12 +347,12 @@ export const createDispatcherFixture = (): DispatcherFixture => {
     throw new TypeError("RVS dispatcher/readback was not installed");
   return {
     dispatch: (command) =>
-      AdobeCommandResultSchema.parse(normalized(dispatcher(command))),
+      AdobeCommandResultV1Schema.parse(normalized(dispatcher(command))),
     snapshot: () => normalized(snapshotter()),
     canonical: () => String(canonicalizer()),
     sha256: (value) => String(sha256(value)),
   };
 };
 
-export const dispatchFixture = (command: unknown): AdobeCommandResult =>
+export const dispatchFixture = (command: unknown): AdobeCommandResultV1 =>
   createDispatcherFixture().dispatch(command);

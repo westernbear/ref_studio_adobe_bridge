@@ -2,15 +2,11 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { AdobeCommandEnvelopeSchema } from "./contracts.js";
+import { AdobeCommandEnvelopeV1Schema } from "./contracts.js";
 import { finalizePanelResult } from "./execution.js";
 import { runStdioServer } from "./server.js";
 import { CommandSpool } from "./spool.js";
-import {
-  AdobeWorkingCopy,
-  LocalProgramRenderAdapter,
-  LocalProgramUploadAdapter,
-} from "./working-copy.js";
+import { AdobeWorkingCopy } from "./working-copy.js";
 
 const option = (name: string): string | undefined => {
   const index = process.argv.indexOf(name);
@@ -57,7 +53,7 @@ const main = async (): Promise<void> => {
     return;
   }
   if (mode === "enqueue") {
-    const input = AdobeCommandEnvelopeSchema.parse(
+    const input = AdobeCommandEnvelopeV1Schema.parse(
       JSON.parse(await Bun.stdin.text()),
     );
     process.stdout.write(`${JSON.stringify(await spool.enqueue(input))}\n`);
@@ -109,23 +105,14 @@ const main = async (): Promise<void> => {
         connectorAuthorization === undefined)
     )
       throw new TypeError("local render/upload configuration is required");
-    const unavailable = async (): Promise<never> => {
-      throw new TypeError("local adapter unavailable for this command");
-    };
     const { status: _status, ...envelope } = command;
     const result = await finalizePanelResult(
-      AdobeCommandEnvelopeSchema.parse(envelope),
+      AdobeCommandEnvelopeV1Schema.parse(envelope),
       JSON.parse(await readFile(panelResultPath, "utf8")),
       {
         project,
-        renderer:
-          renderProgram === undefined
-            ? { render: unavailable }
-            : new LocalProgramRenderAdapter(renderProgram),
-        uploader:
-          uploadProgram === undefined
-            ? { upload: unavailable }
-            : new LocalProgramUploadAdapter(uploadProgram),
+        renderProgram,
+        uploadProgram,
         connectorAuthorization:
           connectorAuthorization ?? "local-connector-only",
       },
